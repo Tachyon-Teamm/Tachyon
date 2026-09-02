@@ -1,26 +1,33 @@
-import pytest
+import unittest
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from app.services.normalization.uom_normalizer import UOMNormalizer
 
-def test_uom_standardization():
-    assert UOMNormalizer.normalize_uom("Nos") == "EA"
-    assert UOMNormalizer.normalize_uom("NUMBERS") == "EA"
-    assert UOMNormalizer.normalize_uom("pcs") == "EA"
-    assert UOMNormalizer.normalize_uom("MTR") == "MTR"
-    assert UOMNormalizer.normalize_uom("METER") == "MTR"
-    assert UOMNormalizer.normalize_uom("KGS") == "KG"
+class TestUOMNormalizer(unittest.TestCase):
+    def test_uom_standardization(self):
+        self.assertEqual(UOMNormalizer.normalize_uom("Nos"), "EA")
+        self.assertEqual(UOMNormalizer.normalize_uom("NUMBERS"), "EA")
+        self.assertEqual(UOMNormalizer.normalize_uom("pcs"), "EA")
+        self.assertEqual(UOMNormalizer.normalize_uom("MTR"), "MTR")
+        self.assertEqual(UOMNormalizer.normalize_uom("METER"), "MTR")
+        self.assertEqual(UOMNormalizer.normalize_uom("KGS"), "KG")
 
-def test_packaging_multiplier_extraction():
-    # 18kg Bucket
-    mult1, base1 = UOMNormalizer.extract_packaging_factor("GREASE MOBILITH SHC 100 - 18KG BUCKET", "BKT")
-    assert mult1 == 18.0
-    assert base1 == "KG"
+    def test_packaging_multiplier_extraction(self):
+        # 18kg Bucket
+        mult1, base1 = UOMNormalizer.extract_packaging_factor("GREASE MOBILITH SHC 100 - 18KG BUCKET", "BKT")
+        self.assertEqual(mult1, 18.0)
+        self.assertEqual(base1, "KG")
 
-    # 180kg Drum
-    mult2, base2 = UOMNormalizer.extract_packaging_factor("MOBILITH SHC 100 - 180KG DRUM", "DRM")
-    assert mult2 == 180.0
-    assert base2 == "KG"
+        # 180kg Drum
+        mult2, base2 = UOMNormalizer.extract_packaging_factor("MOBILITH SHC 100 - 180KG DRUM", "DRM")
+        self.assertEqual(mult2, 180.0)
+        self.assertEqual(base2, "KG")
 
-    # Standard piece without packaging
-    mult3, base3 = UOMNormalizer.extract_packaging_factor("VALVE GATE 6IN 300# CS FLG", "Nos")
-    assert mult3 == 1.0
-    assert base3 == "EA"
+        # Standard piece without packaging
+        mult3, base3 = UOMNormalizer.extract_packaging_factor("VALVE GATE 6IN 300# CS FLG", "Nos")
+        self.assertEqual(mult3, 1.0)
+        self.assertEqual(base3, "EA")
+
+if __name__ == "__main__":
+    unittest.main()
