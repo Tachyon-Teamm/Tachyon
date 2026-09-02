@@ -103,4 +103,26 @@ class SafetyGuardrails:
         if thread_a and thread_b and thread_a != thread_b:
             return True, f"Mechanical Fit Veto: Fastener thread size mismatch ({thread_a} vs {thread_b})", "REJECT"
 
+        # 10. Steel Sector Invariants (Rebar Grade & Refractory Temp/Alumina)
+        grade_a = specs_a.get("steel_grade")
+        grade_b = specs_b.get("steel_grade")
+        if grade_a and grade_b and grade_a != grade_b:
+            return True, f"Structural Safety Veto: Steel rebar yield strength grade mismatch ({grade_a} vs {grade_b})", "SUBSTITUTE"
+
+        alumina_a = specs_a.get("alumina_content")
+        alumina_b = specs_b.get("alumina_content")
+        if alumina_a and alumina_b and alumina_a != alumina_b:
+            return True, f"Refractory Thermal Veto: Alumina percentage specification mismatch ({alumina_a} vs {alumina_b})", "SUBSTITUTE"
+
+        # 11. Mining Sector Invariants (Conveyor Belt Width & Tensile Rating)
+        b_width_a = specs_a.get("belt_width")
+        b_width_b = specs_b.get("belt_width")
+        if b_width_a and b_width_b and b_width_a != b_width_b:
+            return True, f"Mining Safety Veto: Conveyor belt width physical mismatch ({b_width_a} vs {b_width_b})", "REJECT"
+
+        adapter_a = specs_a.get("adapter_fitment_system")
+        adapter_b = specs_b.get("adapter_fitment_system")
+        if adapter_a and adapter_b and adapter_a != adapter_b:
+            return True, f"Mining Safety Veto: Bucket tooth adapter fitment system mismatch ({adapter_a} vs {adapter_b})", "REJECT"
+
         return False, None, None

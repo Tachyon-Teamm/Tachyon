@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 import uuid
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, or_
@@ -16,7 +16,10 @@ class MatcherEngine:
     @classmethod
     def execute_cross_cpse_matching(cls, db: Session, job_id: int) -> Dict[str, Any]:
         """
-        Executes zero-training neuro-symbolic multi-CPSE matching.
+        Executes Two-Stage Hybrid Neuro-Symbolic Multi-CPSE Matching:
+          Stage 1: Fast Hybrid Candidate Retrieval (Dense BGE-M3 + Sparse SPLADE via Reciprocal Rank Fusion)
+          Stage 2: Deterministic Multi-Sector Invariant Verification + Cross-Encoder Reranking
+          Stage 3: Correlation Graph Entity Resolution
         """
         job = db.query(MatchJob).filter(MatchJob.id == job_id).first()
         if not job:
@@ -26,7 +29,7 @@ class MatcherEngine:
         db.commit()
         
         try:
-            # 1. Fetch active materials across all CPSEs with their embeddings
+            # 1. Fetch active materials across all CPSEs
             materials = db.query(Material).filter(Material.status == "ACTIVE").all()
             if not materials or len(materials) < 2:
                 job.status = "COMPLETED"
@@ -35,19 +38,22 @@ class MatcherEngine:
                 db.commit()
                 return {"status": "COMPLETED", "candidates_found": 0}
                 
-            # Pre-load embeddings and procurement history into memory for efficient processing
             mat_dict: Dict[int, Material] = {m.id: m for m in materials}
-            embeddings_dict: Dict[int, List[float]] = {}
+            dense_dict: Dict[int, List[float]] = {}
+            sparse_dict: Dict[int, Dict[str, float]] = {}
             procurement_dict: Dict[int, Dict[str, Any]] = {}
             
             for m in materials:
                 emb = db.query(MaterialEmbedding).filter(MaterialEmbedding.material_id == m.id).first()
                 if emb and emb.embedding is not None:
-                    embeddings_dict[m.id] = list(emb.embedding)
+                    dense_dict[m.id] = list(emb.embedding)
+                    sparse_dict[m.id] = emb.sparse_vector if emb.sparse_vector else EmbeddingService.generate_sparse_vector(m.short_description)
                 else:
-                    # Generate embedding on the fly if missing
                     v = EmbeddingService.generate_embedding(m.short_description)
-                    embeddings_dict[m.id] = v
+                    s = EmbeddingService.generate_sparse_vector(m.short_description)
+                    dense_dict[m.id] = v
+                    sparse_dict[m.id] = s
+                    db.add(MaterialEmbedding(material_id=m.id, embedding=v, sparse_vector=s))
                     
                 proc = db.query(ProcurementHistory).filter(ProcurementHistory.material_id == m.id).first()
                 if proc:
@@ -59,109 +65,138 @@ class MatcherEngine:
                 else:
                     procurement_dict[m.id] = {}
 
-            # 2. Level-1 Category / Noun Blocking to prevent NxN explosion
-            # Group materials by normalized item noun or clean part number
-            blocks: Dict[str, List[int]] = {}
-            for m in materials:
-                # Primary blocking key: item_noun or cleaned bearing part number
-                if m.clean_part_number and len(m.clean_part_number) >= 4:
-                    key = f"PART_{m.clean_part_number[:4]}"
-                elif m.item_noun:
-                    key = f"NOUN_{m.item_noun}"
-                else:
-                    key = "NOUN_GENERAL"
-                    
-                if key not in blocks:
-                    blocks[key] = []
-                blocks[key].append(m.id)
+            db.commit()
 
+            # 2. Hybrid Candidate Retrieval & Pair Evaluation
+            evaluated_pairs: Set[Tuple[int, int]] = set()
+            candidate_records = []
+            candidate_edges_for_clustering = []
             total_pairs = 0
+
+            mat_ids = list(mat_dict.keys())
+            for i in range(len(mat_ids)):
+                id_a = mat_ids[i]
+                mat_a = mat_dict[id_a]
+                
+                # Dense similarities for item A across all other items
+                dense_scores: Dict[int, float] = {}
+                sparse_scores: Dict[int, float] = {}
+                
+                for j in range(len(mat_ids)):
+                    if i == j: continue
+                    id_b = mat_ids[j]
+                    mat_b = mat_dict[id_b]
+                    if mat_a.cpse_id == mat_b.cpse_id and mat_a.material_code == mat_b.material_code:
+                        continue
+                        
+                    d_sim = CompositeScorer.calculate_cosine_similarity(dense_dict.get(id_a, []), dense_dict.get(id_b, []))
+                    s_sim = EmbeddingService.compute_sparse_similarity(sparse_dict.get(id_a, {}), sparse_dict.get(id_b, {}))
+                    dense_scores[id_b] = d_sim
+                    sparse_scores[id_b] = s_sim
+
+                # Fused Top-K Candidates via Reciprocal Rank Fusion (RRF)
+                rrf_ranked = EmbeddingService.compute_reciprocal_rank_fusion(dense_scores, sparse_scores, k=60)
+                top_candidate_ids = list(rrf_ranked.keys())[:30] # Top 30 candidates per item
+
+                for id_b in top_candidate_ids:
+                    pair_key = (min(id_a, id_b), max(id_a, id_b))
+                    if pair_key in evaluated_pairs:
+                        continue
+                    evaluated_pairs.add(pair_key)
+                    total_pairs += 1
+                    
+                    mat_b = mat_dict[id_b]
+                    specs_a = mat_a.extracted_attributes or {}
+                    specs_b = mat_b.extracted_attributes or {}
+                    
+                    # Hard Invariant Guardrail Veto
+                    is_vetoed, veto_reason, suggested_route = SafetyGuardrails.evaluate_pair(specs_a, specs_b)
+                    
+                    # Composite Scoring with Cross-Encoder & Category Weights
+                    scores = CompositeScorer.compute_composite(
+                        vec_a=dense_dict.get(id_a, []),
+                        vec_b=dense_dict.get(id_b, []),
+                        specs_a=specs_a,
+                        specs_b=specs_b,
+                        proc_a=procurement_dict.get(id_a, {}),
+                        proc_b=procurement_dict.get(id_b, {}),
+                        category=mat_a.item_noun,
+                        sparse_a=sparse_dict.get(id_a, {}),
+                        sparse_b=sparse_dict.get(id_b, {}),
+                        desc_a=mat_a.short_description,
+                        desc_b=mat_b.short_description
+                    )
+
+                    effective_score = 0.0 if is_vetoed and suggested_route == "REJECT" else scores["composite_score"]
+
+                    candidate_info = {
+                        "job_id": job.id,
+                        "material_a_id": id_a,
+                        "material_b_id": id_b,
+                        "semantic_score": scores["semantic_score"],
+                        "attribute_score": scores["attribute_score"],
+                        "procurement_score": scores["procurement_score"],
+                        "composite_score": effective_score,
+                        "safety_veto": is_vetoed,
+                        "veto_reason": veto_reason,
+                        "confidence_tier": "LOW" if is_vetoed else scores["confidence_tier"],
+                        "is_auto_approvable": scores.get("is_auto_approvable", False) and not is_vetoed,
+                        "category_code": mat_a.item_noun or "GENERAL"
+                    }
+                    candidate_records.append(candidate_info)
+                    candidate_edges_for_clustering.append({
+                        "material_a_id": id_a,
+                        "material_b_id": id_b,
+                        "composite_score": effective_score,
+                        "is_vetoed": is_vetoed
+                    })
+
+            # 3. Correlation Clustering for Multi-CPSE Transitive Resolution
+            clustering_res = ClusterEngine.form_clusters(candidate_edges_for_clustering, min_score=settings.THRESHOLD_MEDIUM)
+            mat_to_cluster = clustering_res["material_to_cluster"]
+
             candidates_created = 0
-            clusters_map: Dict[str, str] = {} # Keyed by normalized canonical spec signature
+            created_review_clusters: Set[str] = set()
 
-            # 3. Evaluate pairs within blocks across different CPSEs
-            for block_key, mat_ids in blocks.items():
-                for i in range(len(mat_ids)):
-                    for j in range(i + 1, len(mat_ids)):
-                        id_a = mat_ids[i]
-                        id_b = mat_ids[j]
-                        mat_a = mat_dict[id_a]
-                        mat_b = mat_dict[id_b]
-                        
-                        # Only match across different CPSEs or distinct materials
-                        if mat_a.cpse_id == mat_b.cpse_id and mat_a.material_code == mat_b.material_code:
-                            continue
-                            
-                        total_pairs += 1
-                        specs_a = mat_a.extracted_attributes or {}
-                        specs_b = mat_b.extracted_attributes or {}
-                        
-                        # Apply Hard Deterministic Invariant Safety Guardrail Veto
-                        is_vetoed, veto_reason, suggested_route = SafetyGuardrails.evaluate_pair(specs_a, specs_b)
-                        
-                        vec_a = embeddings_dict.get(id_a, [])
-                        vec_b = embeddings_dict.get(id_b, [])
-                        proc_a = procurement_dict.get(id_a, {})
-                        proc_b = procurement_dict.get(id_b, {})
-                        
-                        scores = CompositeScorer.compute_composite(
-                            vec_a=vec_a,
-                            vec_b=vec_b,
-                            specs_a=specs_a,
-                            specs_b=specs_b,
-                            proc_a=proc_a,
-                            proc_b=proc_b,
-                            category=mat_a.item_noun
-                        )
-                        
-                        # Determine cluster group identifier
-                        if mat_a.clean_part_number and len(mat_a.clean_part_number) >= 4:
-                            cluster_sig = f"PART_{mat_a.clean_part_number[:4]}"
-                        else:
-                            cluster_sig = f"{mat_a.item_noun or 'GEN'}_{mat_a.nominal_size or 'NOSIZE'}_{mat_a.pressure_class or mat_a.schedule or 'NOPRESS'}"
-                            
-                        if cluster_sig not in clusters_map:
-                            clusters_map[cluster_sig] = f"cluster_{uuid.uuid4().hex[:8]}"
-                        cluster_id = clusters_map[cluster_sig]
+            for c_info in candidate_records:
+                id_a = c_info["material_a_id"]
+                id_b = c_info["material_b_id"]
+                cluster_id = mat_to_cluster.get(id_a) or mat_to_cluster.get(id_b) or f"cluster_{uuid.uuid4().hex[:8]}"
 
-                        # If vetoed, flag candidate and adjust tier
-                        candidate = MatchCandidate(
-                            job_id=job.id,
-                            material_a_id=id_a,
-                            material_b_id=id_b,
-                            semantic_score=scores["semantic_score"],
-                            attribute_score=scores["attribute_score"],
-                            procurement_score=scores["procurement_score"],
-                            composite_score=0.0 if is_vetoed and suggested_route == "REJECT" else scores["composite_score"],
-                            safety_veto=is_vetoed,
-                            veto_reason=veto_reason,
-                            confidence_tier="LOW" if is_vetoed else scores["confidence_tier"],
-                            cluster_group_id=cluster_id
-                        )
-                        db.add(candidate)
-                        db.flush()
-                        
-                        # Add to Review Queue if score is Medium/High or if safety veto requires human sign-off
-                        if scores["composite_score"] >= settings.THRESHOLD_MEDIUM or is_vetoed:
-                            # Check if review entry already exists for this cluster
-                            existing_review = db.query(ReviewQueue).filter(ReviewQueue.cluster_group_id == cluster_id).first()
-                            if not existing_review:
-                                review_entry = ReviewQueue(
-                                    candidate_id=candidate.id,
-                                    cluster_group_id=cluster_id,
-                                    category_code=mat_a.item_noun or "GENERAL",
-                                    status="PENDING",
-                                    confidence_tier="HIGH" if scores["composite_score"] >= settings.THRESHOLD_HIGH and not is_vetoed else "MEDIUM"
-                                )
-                                db.add(review_entry)
-                        
-                        candidates_created += 1
+                cand = MatchCandidate(
+                    job_id=c_info["job_id"],
+                    material_a_id=id_a,
+                    material_b_id=id_b,
+                    semantic_score=c_info["semantic_score"],
+                    attribute_score=c_info["attribute_score"],
+                    procurement_score=c_info["procurement_score"],
+                    composite_score=c_info["composite_score"],
+                    safety_veto=c_info["safety_veto"],
+                    veto_reason=c_info["veto_reason"],
+                    confidence_tier=c_info["confidence_tier"],
+                    cluster_group_id=cluster_id
+                )
+                db.add(cand)
+                db.flush()
+                candidates_created += 1
+
+                # Add to Review Queue if High/Medium confidence or veto requires review
+                if (c_info["composite_score"] >= settings.THRESHOLD_MEDIUM or c_info["safety_veto"]) and cluster_id not in created_review_clusters:
+                    created_review_clusters.add(cluster_id)
+                    review_entry = ReviewQueue(
+                        candidate_id=cand.id,
+                        cluster_group_id=cluster_id,
+                        category_code=c_info["category_code"],
+                        status="PENDING",
+                        confidence_tier="HIGH" if c_info["composite_score"] >= settings.THRESHOLD_HIGH and not c_info["safety_veto"] else "MEDIUM"
+                    )
+                    db.add(review_entry)
 
             job.status = "COMPLETED"
             job.total_pairs_evaluated = total_pairs
             job.candidates_found = candidates_created
             db.commit()
-            return {"status": "COMPLETED", "candidates_found": candidates_created, "pairs_evaluated": total_pairs}
+            return {"status": "COMPLETED", "candidates_found": candidates_created, "pairs_evaluated": total_pairs, "clusters_formed": len(created_review_clusters)}
             
         except Exception as e:
             db.rollback()

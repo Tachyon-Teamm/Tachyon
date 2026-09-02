@@ -7,7 +7,8 @@ celery_app = Celery(
     backend=settings.REDIS_URL,
     include=[
         "app.tasks.ingestion_tasks",
-        "app.tasks.matching_tasks"
+        "app.tasks.matching_tasks",
+        "app.tasks.active_learning"
     ]
 )
 

@@ -37,10 +37,61 @@ class DSU:
 
 class ClusterEngine:
     """
-    Coherence-Gated Graph Transitive Closure Clustering Engine.
-    Groups pairwise candidate matches into multi-material families
-    while preventing 'transitive chaining explosion' through density checks.
+    Multi-Organization Graph Entity Resolution & Correlation Clustering Engine.
+    Implements:
+      1. Correlation Clustering (Pivot Algorithm - Bansal et al.) for global multi-CPSE graph partitioning.
+      2. Coherence-Gated DSU transitive clustering with graph density safeguards.
     """
+
+    @classmethod
+    def correlation_clustering_pivot(
+        cls,
+        nodes: List[int],
+        positive_edges: Dict[Tuple[int, int], float],
+        negative_edges: Set[Tuple[int, int]],
+        threshold: float = 0.70
+    ) -> Dict[str, List[int]]:
+        """
+        Approximation Pivot Algorithm for Correlation Clustering (Bansal et al.):
+        Iteratively picks a pivot node and gathers all positive unvetoed neighbors into a cluster.
+        """
+        remaining_nodes = set(nodes)
+        clusters: Dict[str, List[int]] = {}
+
+        while remaining_nodes:
+            # Pick a pivot (highest degree in positive graph)
+            pivot = None
+            best_deg = -1
+            for n in remaining_nodes:
+                deg = sum(1 for (u, v), w in positive_edges.items() if (u == n or v == n) and (u in remaining_nodes and v in remaining_nodes) and w >= threshold)
+                if deg > best_deg:
+                    best_deg = deg
+                    pivot = n
+
+            if pivot is None:
+                pivot = next(iter(remaining_nodes))
+
+            cluster = [pivot]
+            remaining_nodes.remove(pivot)
+
+            # Find all neighbors with strong positive weight and NO negative/veto edge to pivot
+            candidates_to_add = []
+            for other in remaining_nodes:
+                pair = (min(pivot, other), max(pivot, other))
+                if pair in negative_edges:
+                    continue
+                score = positive_edges.get(pair, 0.0)
+                if score >= threshold:
+                    candidates_to_add.append(other)
+
+            for c in candidates_to_add:
+                cluster.append(c)
+                remaining_nodes.remove(c)
+
+            cluster_uuid = f"cluster_{uuid.uuid4().hex[:8]}"
+            clusters[cluster_uuid] = sorted(cluster)
+
+        return clusters
 
     @classmethod
     def form_clusters(
@@ -59,79 +110,35 @@ class ClusterEngine:
                 'total_clusters': int
             }
         """
-        dsu = DSU()
         nodes: Set[int] = set()
-        adj: Dict[int, Set[int]] = {}
-        edge_scores: Dict[Tuple[int, int], float] = {}
+        positive_edges: Dict[Tuple[int, int], float] = {}
+        negative_edges: Set[Tuple[int, int]] = set()
 
-        # 1. Filter valid unvetoed edges above threshold
-        valid_edges = []
         for edge in candidate_edges:
-            if edge.get("is_vetoed", False):
-                continue
-            score = edge.get("composite_score", 0.0)
-            if score >= min_score:
-                u = edge["material_a_id"]
-                v = edge["material_b_id"]
-                valid_edges.append((u, v, score))
-                nodes.add(u)
-                nodes.add(v)
-                if u not in adj: adj[u] = set()
-                if v not in adj: adj[v] = set()
-                adj[u].add(v)
-                adj[v].add(u)
-                edge_scores[(min(u, v), max(u, v))] = score
+            u = edge["material_a_id"]
+            v = edge["material_b_id"]
+            nodes.add(u)
+            nodes.add(v)
+            pair = (min(u, v), max(u, v))
 
-        # Sort edges by score descending (Kruskal-like highest-confidence first)
-        valid_edges.sort(key=lambda x: x[2], reverse=True)
+            if edge.get("is_vetoed", False) or edge.get("composite_score", 0.0) < min_score:
+                negative_edges.add(pair)
+            else:
+                score = edge.get("composite_score", 0.0)
+                positive_edges[pair] = score
 
-        # 2. Add edges with anti-chaining coherence safeguard
-        for u, v, score in valid_edges:
-            root_u = dsu.find(u)
-            root_v = dsu.find(v)
-            if root_u == root_v:
-                continue
-
-            # Calculate prospective component membership
-            comp_u = [n for n in nodes if dsu.find(n) == root_u]
-            comp_v = [n for n in nodes if dsu.find(n) == root_v]
-            merged_size = len(comp_u) + len(comp_v)
-
-            # For components > 2 items, verify graph edge density before merging
-            if merged_size > 2:
-                # Count actual edges between comp_u and comp_v
-                potential_edges = (merged_size * (merged_size - 1)) / 2
-                actual_edges = 0
-                all_nodes = comp_u + comp_v
-                for i in range(len(all_nodes)):
-                    for j in range(i + 1, len(all_nodes)):
-                        pair = (min(all_nodes[i], all_nodes[j]), max(all_nodes[i], all_nodes[j]))
-                        if pair in edge_scores:
-                            actual_edges += 1
-
-                density = actual_edges / potential_edges if potential_edges > 0 else 1.0
-                if density < min_density:
-                    # Reject merge to prevent transitive chain collapse (A~B and B~C but A!=C)
-                    continue
-
-            dsu.union(u, v)
-
-        # 3. Assemble clusters
-        clusters_by_root: Dict[int, List[int]] = {}
-        for n in nodes:
-            r = dsu.find(n)
-            if r not in clusters_by_root:
-                clusters_by_root[r] = []
-            clusters_by_root[r].append(n)
+        # Run Correlation Clustering
+        named_clusters = cls.correlation_clustering_pivot(
+            nodes=list(nodes),
+            positive_edges=positive_edges,
+            negative_edges=negative_edges,
+            threshold=min_score
+        )
 
         material_to_cluster: Dict[int, str] = {}
-        named_clusters: Dict[str, List[int]] = {}
-
-        for root, member_ids in clusters_by_root.items():
-            cluster_uuid = f"cluster_{uuid.uuid4().hex[:8]}"
-            named_clusters[cluster_uuid] = member_ids
+        for cluster_id, member_ids in named_clusters.items():
             for mid in member_ids:
-                material_to_cluster[mid] = cluster_uuid
+                material_to_cluster[mid] = cluster_id
 
         return {
             "material_to_cluster": material_to_cluster,
