@@ -1,6 +1,13 @@
-﻿from typing import List, Dict, Any, Tuple
-from sqlalchemy.orm import Session
-from app.models.models import ReviewFeedback, Material, ReviewQueue, MatchCandidate
+from typing import List, Dict, Any, Tuple
+try:
+    from sqlalchemy.orm import Session
+    from app.models.models import ReviewFeedback, Material, ReviewQueue, MatchCandidate
+except ImportError:
+    Session = Any  # type: ignore
+    ReviewFeedback = Any  # type: ignore
+    Material = Any  # type: ignore
+    ReviewQueue = Any  # type: ignore
+    MatchCandidate = Any  # type: ignore
 
 class ActiveLearningPipeline:
     """

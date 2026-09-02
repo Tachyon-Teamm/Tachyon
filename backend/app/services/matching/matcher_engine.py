@@ -67,89 +67,71 @@ class MatcherEngine:
 
             db.commit()
 
-            # 2. Hybrid Candidate Retrieval & Pair Evaluation
-            evaluated_pairs: Set[Tuple[int, int]] = set()
+            # 2. 4-Tier Multi-Index High-Recall Candidate Blocking
+            from app.services.matching.blocking_engine import BlockingEngine
+            candidate_pairs = BlockingEngine.generate_candidate_pairs(
+                materials=materials,
+                dense_dict=dense_dict,
+                sparse_dict=sparse_dict,
+                min_dense_sim=0.50
+            )
+
             candidate_records = []
             candidate_edges_for_clustering = []
-            total_pairs = 0
+            total_pairs = len(candidate_pairs)
 
-            mat_ids = list(mat_dict.keys())
-            for i in range(len(mat_ids)):
-                id_a = mat_ids[i]
-                mat_a = mat_dict[id_a]
-                
-                # Dense similarities for item A across all other items
-                dense_scores: Dict[int, float] = {}
-                sparse_scores: Dict[int, float] = {}
-                
-                for j in range(len(mat_ids)):
-                    if i == j: continue
-                    id_b = mat_ids[j]
-                    mat_b = mat_dict[id_b]
-                    if mat_a.cpse_id == mat_b.cpse_id and mat_a.material_code == mat_b.material_code:
-                        continue
-                        
-                    d_sim = CompositeScorer.calculate_cosine_similarity(dense_dict.get(id_a, []), dense_dict.get(id_b, []))
-                    s_sim = EmbeddingService.compute_sparse_similarity(sparse_dict.get(id_a, {}), sparse_dict.get(id_b, {}))
-                    dense_scores[id_b] = d_sim
-                    sparse_scores[id_b] = s_sim
+            for (id_a, id_b) in candidate_pairs:
+                mat_a = mat_dict.get(id_a)
+                mat_b = mat_dict.get(id_b)
+                if not mat_a or not mat_b:
+                    continue
+                if mat_a.cpse_id == mat_b.cpse_id and mat_a.material_code == mat_b.material_code:
+                    continue
 
-                # Fused Top-K Candidates via Reciprocal Rank Fusion (RRF)
-                rrf_ranked = EmbeddingService.compute_reciprocal_rank_fusion(dense_scores, sparse_scores, k=60)
-                top_candidate_ids = list(rrf_ranked.keys())[:30] # Top 30 candidates per item
+                specs_a = mat_a.technical_attributes or mat_a.extracted_attributes or {}
+                specs_b = mat_b.technical_attributes or mat_b.extracted_attributes or {}
 
-                for id_b in top_candidate_ids:
-                    pair_key = (min(id_a, id_b), max(id_a, id_b))
-                    if pair_key in evaluated_pairs:
-                        continue
-                    evaluated_pairs.add(pair_key)
-                    total_pairs += 1
-                    
-                    mat_b = mat_dict[id_b]
-                    specs_a = mat_a.extracted_attributes or {}
-                    specs_b = mat_b.extracted_attributes or {}
-                    
-                    # Hard Invariant Guardrail Veto
-                    is_vetoed, veto_reason, suggested_route = SafetyGuardrails.evaluate_pair(specs_a, specs_b)
-                    
-                    # Composite Scoring with Cross-Encoder & Category Weights
-                    scores = CompositeScorer.compute_composite(
-                        vec_a=dense_dict.get(id_a, []),
-                        vec_b=dense_dict.get(id_b, []),
-                        specs_a=specs_a,
-                        specs_b=specs_b,
-                        proc_a=procurement_dict.get(id_a, {}),
-                        proc_b=procurement_dict.get(id_b, {}),
-                        category=mat_a.item_noun,
-                        sparse_a=sparse_dict.get(id_a, {}),
-                        sparse_b=sparse_dict.get(id_b, {}),
-                        desc_a=mat_a.short_description,
-                        desc_b=mat_b.short_description
-                    )
+                # Hard Invariant Guardrail Veto
+                is_vetoed, veto_reason, suggested_route = SafetyGuardrails.evaluate_pair(specs_a, specs_b)
 
-                    effective_score = 0.0 if is_vetoed and suggested_route == "REJECT" else scores["composite_score"]
+                # Composite Scoring with Category Weights & Dynamic Normalization
+                scores = CompositeScorer.compute_composite(
+                    vec_a=dense_dict.get(id_a, []),
+                    vec_b=dense_dict.get(id_b, []),
+                    specs_a=specs_a,
+                    specs_b=specs_b,
+                    proc_a=procurement_dict.get(id_a, {}),
+                    proc_b=procurement_dict.get(id_b, {}),
+                    category=mat_a.item_noun,
+                    sparse_a=sparse_dict.get(id_a, {}),
+                    sparse_b=sparse_dict.get(id_b, {}),
+                    desc_a=mat_a.short_description,
+                    desc_b=mat_b.short_description
+                )
 
-                    candidate_info = {
-                        "job_id": job.id,
-                        "material_a_id": id_a,
-                        "material_b_id": id_b,
-                        "semantic_score": scores["semantic_score"],
-                        "attribute_score": scores["attribute_score"],
-                        "procurement_score": scores["procurement_score"],
-                        "composite_score": effective_score,
-                        "safety_veto": is_vetoed,
-                        "veto_reason": veto_reason,
-                        "confidence_tier": "LOW" if is_vetoed else scores["confidence_tier"],
-                        "is_auto_approvable": scores.get("is_auto_approvable", False) and not is_vetoed,
-                        "category_code": mat_a.item_noun or "GENERAL"
-                    }
-                    candidate_records.append(candidate_info)
-                    candidate_edges_for_clustering.append({
-                        "material_a_id": id_a,
-                        "material_b_id": id_b,
-                        "composite_score": effective_score,
-                        "is_vetoed": is_vetoed
-                    })
+                effective_score = 0.0 if is_vetoed and suggested_route == "REJECT" else scores["composite_score"]
+
+                candidate_info = {
+                    "job_id": job.id,
+                    "material_a_id": id_a,
+                    "material_b_id": id_b,
+                    "semantic_score": scores["semantic_score"],
+                    "attribute_score": scores["attribute_score"],
+                    "procurement_score": scores["procurement_score"],
+                    "composite_score": effective_score,
+                    "safety_veto": is_vetoed,
+                    "veto_reason": veto_reason,
+                    "confidence_tier": "LOW" if is_vetoed else scores["confidence_tier"],
+                    "is_auto_approvable": scores.get("is_auto_approvable", False) and not is_vetoed,
+                    "category_code": mat_a.item_noun or "GENERAL"
+                }
+                candidate_records.append(candidate_info)
+                candidate_edges_for_clustering.append({
+                    "material_a_id": id_a,
+                    "material_b_id": id_b,
+                    "composite_score": effective_score,
+                    "is_vetoed": is_vetoed
+                })
 
             # 3. Correlation Clustering for Multi-CPSE Transitive Resolution
             clustering_res = ClusterEngine.form_clusters(candidate_edges_for_clustering, min_score=settings.THRESHOLD_MEDIUM)
@@ -198,6 +180,111 @@ class MatcherEngine:
             db.commit()
             return {"status": "COMPLETED", "candidates_found": candidates_created, "pairs_evaluated": total_pairs, "clusters_formed": len(created_review_clusters)}
             
+        except Exception as e:
+            db.rollback()
+            job.status = "FAILED"
+            db.commit()
+            raise e
+
+    @classmethod
+    def execute_incremental_matching(
+        cls,
+        db: Session,
+        new_material_ids: List[int],
+        job_id: int
+    ) -> Dict[str, Any]:
+        """
+        Incremental Multi-CPSE Candidate Matching:
+        Efficiently evaluates only new materials against existing catalog in O(log N).
+        """
+        from app.services.matching.blocking_engine import BlockingEngine
+
+        job = db.query(MatchJob).filter(MatchJob.id == job_id).first()
+        if not job:
+            return {"status": "FAILED", "error": "Job not found"}
+
+        job.status = "RUNNING"
+        db.commit()
+
+        try:
+            new_materials = db.query(Material).filter(Material.id.in_(new_material_ids)).all()
+            existing_materials = db.query(Material).filter(
+                Material.id.notin_(new_material_ids),
+                Material.status == "ACTIVE"
+            ).all()
+
+            if not new_materials or not existing_materials:
+                job.status = "COMPLETED"
+                db.commit()
+                return {"status": "COMPLETED", "candidates_found": 0}
+
+            # Gather embeddings
+            dense_dict: Dict[int, List[float]] = {}
+            for m in new_materials + existing_materials:
+                emb = db.query(MaterialEmbedding).filter(MaterialEmbedding.material_id == m.id).first()
+                if emb and emb.embedding is not None:
+                    dense_dict[m.id] = list(emb.embedding)
+                else:
+                    v = EmbeddingService.generate_embedding(m.short_description)
+                    dense_dict[m.id] = v
+                    db.add(MaterialEmbedding(material_id=m.id, embedding=v))
+
+            db.commit()
+
+            # Generate incremental candidate pairs
+            candidate_pairs = BlockingEngine.generate_incremental_candidates(
+                new_materials=new_materials,
+                existing_materials=existing_materials,
+                dense_dict=dense_dict,
+                min_dense_sim=0.50
+            )
+
+            candidate_records = []
+            for (id_a, id_b) in candidate_pairs:
+                mat_a = db.query(Material).filter(Material.id == id_a).first()
+                mat_b = db.query(Material).filter(Material.id == id_b).first()
+                if not mat_a or not mat_b:
+                    continue
+
+                specs_a = mat_a.technical_attributes or mat_a.extracted_attributes or {}
+                specs_b = mat_b.technical_attributes or mat_b.extracted_attributes or {}
+
+                is_vetoed, veto_reason, suggested_route = SafetyGuardrails.evaluate_pair(specs_a, specs_b)
+                scores = CompositeScorer.compute_composite(
+                    vec_a=dense_dict.get(id_a, []),
+                    vec_b=dense_dict.get(id_b, []),
+                    specs_a=specs_a,
+                    specs_b=specs_b,
+                    proc_a={},
+                    proc_b={},
+                    category=mat_a.item_noun,
+                    desc_a=mat_a.short_description,
+                    desc_b=mat_b.short_description
+                )
+
+                effective_score = 0.0 if is_vetoed and suggested_route == "REJECT" else scores["composite_score"]
+                cand = MatchCandidate(
+                    job_id=job.id,
+                    material_a_id=id_a,
+                    material_b_id=id_b,
+                    semantic_score=scores["semantic_score"],
+                    attribute_score=scores["attribute_score"],
+                    procurement_score=scores["procurement_score"],
+                    composite_score=effective_score,
+                    safety_veto=is_vetoed,
+                    veto_reason=veto_reason,
+                    confidence_tier="LOW" if is_vetoed else scores["confidence_tier"],
+                    cluster_group_id=f"cluster_{uuid.uuid4().hex[:8]}"
+                )
+                db.add(cand)
+                candidate_records.append(cand)
+
+            job.status = "COMPLETED"
+            job.total_pairs_evaluated = len(candidate_pairs)
+            job.candidates_found = len(candidate_records)
+            db.commit()
+            return {"status": "COMPLETED", "candidates_found": len(candidate_records), "pairs_evaluated": len(candidate_pairs)}
+
         except Exception as e:
             db.rollback()
             job.status = "FAILED"

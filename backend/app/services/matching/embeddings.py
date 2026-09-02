@@ -1,4 +1,7 @@
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None
 import re
 import math
 from typing import List, Dict, Any, Union, Optional, Tuple
@@ -134,22 +137,39 @@ class EmbeddingService:
 
     @staticmethod
     def _deterministic_hash_vector(text: str, dim: int = 1024) -> List[float]:
-        """Deterministic pseudo-embedding for testing environments without PyTorch weights"""
+        """Deterministic pseudo-embedding for testing environments without PyTorch/Numpy weights"""
         import hashlib
         words = text.lower().split()
-        vec = np.zeros(dim, dtype=np.float32)
-        for i, word in enumerate(words):
-            h = int(hashlib.md5(word.encode('utf-8')).hexdigest(), 16)
-            idx = h % dim
-            val = ((h >> 8) % 1000) / 500.0 - 1.0
-            vec[idx] += val
-            vec[(idx + 13) % dim] += val * 0.5
-            vec[(idx + 37) % dim] += val * 0.25
-        
-        norm = np.linalg.norm(vec)
-        if norm > 0:
-            vec = vec / norm
+        if np is not None:
+            vec = np.zeros(dim, dtype=np.float32)
+            for i, word in enumerate(words):
+                h = int(hashlib.md5(word.encode('utf-8')).hexdigest(), 16)
+                idx = h % dim
+                val = ((h >> 8) % 1000) / 500.0 - 1.0
+                vec[idx] += val
+                vec[(idx + 13) % dim] += val * 0.5
+                vec[(idx + 37) % dim] += val * 0.25
+            
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+            else:
+                vec[0] = 1.0
+            return vec.tolist()
         else:
-            vec[0] = 1.0
-        return vec.tolist()
+            vec_list = [0.0] * dim
+            for word in words:
+                h = int(hashlib.md5(word.encode('utf-8')).hexdigest(), 16)
+                idx = h % dim
+                val = ((h >> 8) % 1000) / 500.0 - 1.0
+                vec_list[idx] += val
+                vec_list[(idx + 13) % dim] += val * 0.5
+                vec_list[(idx + 37) % dim] += val * 0.25
+            
+            norm = math.sqrt(sum(x * x for x in vec_list))
+            if norm > 0:
+                vec_list = [round(x / norm, 6) for x in vec_list]
+            else:
+                vec_list[0] = 1.0
+            return vec_list
 

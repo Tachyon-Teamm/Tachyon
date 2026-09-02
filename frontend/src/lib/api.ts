@@ -85,6 +85,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(actionData),
     }),
+  bulkApprove: (clusterGroupIds: string[], reviewerNotes = "Bulk approved high-confidence matches") =>
+    fetchApi<any>("/review/bulk-approve", {
+      method: "POST",
+      body: JSON.stringify(clusterGroupIds),
+    }),
+  fileDispute: (clusterGroupId: string, disputeReason: string, dissentingCpse?: string) => {
+    const q = new URLSearchParams({
+      cluster_group_id: clusterGroupId,
+      dispute_reason: disputeReason,
+    });
+    if (dissentingCpse) q.append("dissenting_cpse_code", dissentingCpse);
+    return fetchApi<any>(`/review/dispute?${q.toString()}`, { method: "POST" });
+  },
 
   // Crosswalk & Reverse Lookup
   reverseLookup: (localCode: string, cpseCode?: string) => {
