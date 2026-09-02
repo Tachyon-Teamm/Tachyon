@@ -3,16 +3,22 @@ from app.core.database import SyncSessionLocal, sync_engine
 from app.core.security import get_password_hash
 from app.models.models import Base, CPSE, User, TaxonomyCategory
 from app.db.seed_data import seed_enterprise_scenarios
+from app.db.taxonomy_seed import seed_multi_sector_taxonomies
 
 def init_db():
     Base.metadata.create_all(bind=sync_engine)
     db = SyncSessionLocal()
     try:
-        # 1. Seed CPSEs
+        # 1. Seed CPSEs across multi-sector landscape
         cpses_data = [
-            {"code": "CPCL", "name": "Chennai Petroleum Corporation Limited"},
-            {"code": "IOCL", "name": "Indian Oil Corporation Limited"},
-            {"code": "BPCL", "name": "Bharat Petroleum Corporation Limited"},
+            {"code": "CPCL", "name": "Chennai Petroleum Corporation Limited", "sector": "OIL_AND_GAS"},
+            {"code": "IOCL", "name": "Indian Oil Corporation Limited", "sector": "OIL_AND_GAS"},
+            {"code": "BPCL", "name": "Bharat Petroleum Corporation Limited", "sector": "OIL_AND_GAS"},
+            {"code": "ONGC", "name": "Oil and Natural Gas Corporation", "sector": "OIL_AND_GAS"},
+            {"code": "NTPC", "name": "NTPC Limited (Power)", "sector": "POWER"},
+            {"code": "SAIL", "name": "Steel Authority of India Limited", "sector": "STEEL"},
+            {"code": "COALINDIA", "name": "Coal India Limited", "sector": "MINING"},
+            {"code": "BHEL", "name": "Bharat Heavy Electricals Limited", "sector": "HEAVY_ENG"},
         ]
         
         for c_data in cpses_data:
@@ -57,7 +63,10 @@ def init_db():
                 db.add(TaxonomyCategory(**cat))
         db.commit()
 
-        # 4. Seed Synthetic Multi-CPSE Enterprise Datasets
+        # 4. Seed Multi-Sector eCl@ss 14.0 Hierarchical Taxonomy & Dynamic Invariant Dictionaries
+        seed_multi_sector_taxonomies(db)
+
+        # 5. Seed Synthetic Multi-CPSE Enterprise Datasets
         seed_enterprise_scenarios(db)
 
     finally:

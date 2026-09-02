@@ -114,6 +114,45 @@ class TaxonomyCategory(Base):
     
     parent = relationship("TaxonomyCategory", remote_side=[id])
 
+class TaxonomyNode(Base):
+    """
+    Multi-Sector Hierarchical Taxonomy Node supporting eCl@ss 14.0, UNSPSC v26, and sector schemas.
+    Sectors: OIL_AND_GAS, POWER, STEEL, MINING, HEAVY_ENG, CHEMICALS, GENERAL
+    """
+    __tablename__ = "taxonomy_nodes"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    standard = Column(String(50), default="ECLASS_14_0", index=True) # ECLASS_14_0, UNSPSC_V26, CUSTOM
+    code = Column(String(50), unique=True, index=True, nullable=False) # e.g. "27-27-01-01", "401416"
+    name = Column(String(200), nullable=False)
+    sector = Column(String(50), default="GENERAL", index=True)
+    level = Column(Integer, default=1)
+    parent_id = Column(Integer, ForeignKey("taxonomy_nodes.id"), nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    parent = relationship("TaxonomyNode", remote_side=[id])
+    attributes = relationship("AttributeDictionary", back_populates="taxonomy_node", cascade="all, delete-orphan")
+
+class AttributeDictionary(Base):
+    """
+    Dynamic attribute definitions and safety invariant rules per taxonomy node.
+    """
+    __tablename__ = "attribute_dictionaries"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    taxonomy_node_id = Column(Integer, ForeignKey("taxonomy_nodes.id"), nullable=True, index=True)
+    attribute_key = Column(String(100), nullable=False, index=True) # e.g. "pressure_class", "primary_voltage", "tensile_strength"
+    attribute_label = Column(String(150), nullable=False)
+    data_type = Column(String(50), default="STRING") # STRING, NUMERIC, ENUM
+    unit_of_measure = Column(String(50), nullable=True) # e.g. "BAR", "KV", "MM", "KG"
+    is_critical_safety_invariant = Column(Boolean, default=False)
+    veto_threshold = Column(Float, default=0.0) # 0.0 for exact equality match
+    allowed_values = Column(JSON, default=list)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    taxonomy_node = relationship("TaxonomyNode", back_populates="attributes")
+
 class Material(Base):
     __tablename__ = "materials"
     
@@ -165,8 +204,9 @@ class MaterialEmbedding(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=False, unique=True, index=True)
-    embedding = Column(Vector(384), nullable=False) # 384 dimensions for all-MiniLM-L6-v2
-    model_name = Column(String(50), default="all-MiniLM-L6-v2")
+    embedding = Column(Vector(1024), nullable=False) # 1024 dimensions for BAAI/bge-m3
+    sparse_vector = Column(JSON, default=dict) # Learned sparse representation (SPLADE-v3 / BM25)
+    model_name = Column(String(50), default="BAAI/bge-m3")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     material = relationship("Material", back_populates="embedding")

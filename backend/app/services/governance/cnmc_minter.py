@@ -73,3 +73,48 @@ class CNMCMinter:
         db.add(cnmc_entry)
         db.flush()
         return code_str
+
+    @classmethod
+    def mint_distributed_cnmc(
+        cls,
+        db: Session,
+        golden_record_id: int,
+        sector: str = "GEN",
+        category_code: str = "0000"
+    ) -> str:
+        """
+        Mints structured multi-sector distributed code:
+        CNMC-[SECTOR]-[CATEGORY]-[SEQUENCE]-[CHECKSUM]
+        e.g. CNMC-OG-4014-00001042-8
+        """
+        existing = db.query(CNMCCode).filter(CNMCCode.golden_record_id == golden_record_id).first()
+        if existing:
+            return existing.code
+
+        max_id = db.query(func.max(CNMCCode.id)).scalar() or 0
+        next_seq = max_id + 1
+        
+        sector_abbr = {
+            "OIL_AND_GAS": "OG",
+            "POWER": "PW",
+            "STEEL": "ST",
+            "MINING": "MN",
+            "HEAVY_ENG": "HE",
+            "CHEMICALS": "CH"
+        }.get(sector.upper(), "GN")
+
+        cat_abbr = category_code[:4].upper() if category_code else "0000"
+        seq_str = f"{next_seq:0{settings.CNMC_DIGITS}d}"
+        numeric_payload = "".join(d for d in (cat_abbr + seq_str) if d.isdigit())
+        checksum = calculate_verhoeff_checksum(numeric_payload)
+        
+        code_str = f"{settings.CNMC_PREFIX}-{sector_abbr}-{cat_abbr}-{seq_str}-{checksum}"
+        
+        cnmc_entry = CNMCCode(
+            code=code_str,
+            golden_record_id=golden_record_id,
+            is_active=True
+        )
+        db.add(cnmc_entry)
+        db.flush()
+        return code_str

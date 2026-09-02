@@ -238,7 +238,48 @@ class SpecExtractor:
             if thread_pat.group(2):
                 specs["length"] = f"{thread_pat.group(2)} MM"
 
-        # 12. Dynamic Technical Attributes Dictionary (PIM schema-on-read)
+        # 12. Steel Sector Specs (Rebar Grade, Refractory Alumina, Max Temp)
+        steel_grade_pat = re.search(r'\b(FE\s*500D?|FE\s*550D?|FE\s*415|IS\s*1786|IS\s*2062)\b', desc)
+        if steel_grade_pat:
+            specs["steel_grade"] = steel_grade_pat.group(1).upper()
+            if not specs["item_noun"]:
+                specs["item_noun"] = "STEEL REBAR / TMT"
+
+        alumina_pat = re.search(r'\b(\d+(?:\.\d+)?\s*%\s*(?:AL2O3|ALUMINA))\b|\b(ALUMINA\s*\d+%)\b', desc)
+        if alumina_pat:
+            specs["alumina_content"] = (alumina_pat.group(1) or alumina_pat.group(2)).upper()
+            if not specs["item_noun"]:
+                specs["item_noun"] = "REFRACTORY FIREBRICK"
+
+        temp_pat = re.search(r'\b(\d{3,4}\s*(?:DEG\s*C|C|\x00C))\b', desc)
+        if temp_pat:
+            specs["max_service_temp"] = temp_pat.group(1).upper()
+
+        # 13. Mining Sector Specs (Belt Width, Tensile Rating, Shovel Bucket Teeth)
+        belt_pat = re.search(r'\b(\d{3,4}\s*MM\s*(?:WIDTH|BELT|WIDE))\b|\bBELT\s*WIDTH\s*(\d{3,4}\s*MM)\b', desc)
+        if belt_pat:
+            specs["belt_width"] = (belt_pat.group(1) or belt_pat.group(2)).upper()
+            if not specs["item_noun"]:
+                specs["item_noun"] = "CONVEYOR BELTING"
+
+        tensile_pat = re.search(r'\b(\d+(?:\.\d+)?\s*(?:N/MM|KN/M|MPA|N/MM2))\b', desc)
+        if tensile_pat:
+            specs["tensile_rating"] = tensile_pat.group(1).upper()
+
+        tooth_pat = re.search(r'\b(BUCKET\s*TOOTH|DRAGLINE\s*TOOTH|SHOVEL\s*TOOTH|ADAPTER\s*PIN)\b', desc)
+        if tooth_pat:
+            specs["adapter_fitment_system"] = tooth_pat.group(1).upper()
+            if not specs["item_noun"]:
+                specs["item_noun"] = "BUCKET TOOTH"
+
+        # 14. Heavy Engineering Specs (Boiler Tubes, Economizer Tubes)
+        boiler_tube_pat = re.search(r'\b(SA213|SA210|SA192|ASME\s*SA\s*\d+)\b', desc)
+        if boiler_tube_pat:
+            specs["moc"] = boiler_tube_pat.group(1).upper()
+            if not specs["item_noun"]:
+                specs["item_noun"] = "BOILER TUBE"
+
+        # 15. Dynamic Technical Attributes Dictionary (PIM schema-on-read)
         tech_attrs = {}
         for k, v in specs.items():
             if v is not None and k not in ("raw_preprocessed", "technical_attributes") and not (isinstance(v, bool) and not v):
@@ -246,3 +287,49 @@ class SpecExtractor:
         specs["technical_attributes"] = tech_attrs
             
         return specs
+
+    @classmethod
+    async def extract_specs_with_llm(cls, raw_description: str, taxonomy_code: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Extracts structured parameters via local vLLM / OpenAI-compatible endpoint with JSON schema constraint,
+        falling back to deterministic parametric extraction.
+        """
+        import httpx
+        from app.core.config import settings
+
+        # Start with fast deterministic extraction as solid base
+        deterministic_specs = cls.extract_specs(raw_description)
+
+        if not getattr(settings, "VLLM_API_BASE", None):
+            return deterministic_specs
+
+        try:
+            prompt = (
+                f"Extract structured technical parameters from the following industrial material description as JSON.\n"
+                f"Description: {raw_description}\n"
+                f"JSON Schema Keys: item_noun, nominal_size, pressure_class, moc, schedule, end_connection, voltage_rating, current_rating, part_number.\n"
+                f"Respond ONLY with valid JSON."
+            )
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                res = await client.post(
+                    f"{settings.VLLM_API_BASE}/chat/completions",
+                    json={
+                        "model": settings.LLM_MODEL_NAME,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.0,
+                        "response_format": {"type": "json_object"}
+                    }
+                )
+                if res.status_code == 200:
+                    import json
+                    content = res.json()["choices"][0]["message"]["content"]
+                    parsed = json.loads(content)
+                    # Merge LLM-extracted keys into deterministic base
+                    for k, v in parsed.items():
+                        if v and not deterministic_specs.get(k):
+                            deterministic_specs[k] = v
+        except Exception:
+            # Silent fallback to deterministic specs
+            pass
+
+        return deterministic_specs
