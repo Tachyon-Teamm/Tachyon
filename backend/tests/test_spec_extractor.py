@@ -51,5 +51,30 @@ class TestSpecExtractor(unittest.TestCase):
         self.assertTrue(SpecExtractor.extract_specs(assembly_desc)["is_kit_or_assembly"])
         self.assertFalse(SpecExtractor.extract_specs(spare_desc)["is_kit_or_assembly"])
 
+    def test_part_number_pn_vs_pressure_class(self):
+        desc = "VALVE GATE 6IN 300# PN: 889102"
+        specs = SpecExtractor.extract_specs(desc)
+        self.assertEqual(specs["pressure_class"], "CLASS 300#")
+        self.assertNotEqual(specs["pressure_class"], "PN 300")
+
+    def test_compound_gasket_noun_priority(self):
+        desc = "GASKET FOR GATE VALVE 6IN 300#"
+        specs = SpecExtractor.extract_specs(desc)
+        self.assertEqual(specs["item_noun"], "GASKET")
+
+    def test_multi_sector_attributes(self):
+        cbl_desc = "CABLE XLPE 3CX240 SQMM 11KV 630A 3P"
+        cbl_specs = SpecExtractor.extract_specs(cbl_desc)
+        self.assertEqual(cbl_specs["item_noun"], "CABLE")
+        self.assertEqual(cbl_specs["voltage_rating"], "11KV")
+        self.assertEqual(cbl_specs["current_rating"], "630A")
+        self.assertEqual(cbl_specs["pole_count"], "3P")
+
+        bolt_desc = "HEX BOLT M16 X 65 MM GRADE 8.8"
+        bolt_specs = SpecExtractor.extract_specs(bolt_desc)
+        self.assertEqual(bolt_specs["item_noun"], "FASTENER")
+        self.assertEqual(bolt_specs["thread_size"], "M16")
+        self.assertEqual(bolt_specs["length"], "65 MM")
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,25 @@ try:
 except ImportError:
     HAS_PYDANTIC_SETTINGS = False
 
+def _load_env_file():
+    for candidate in [".env", os.path.join(os.getcwd(), ".env"), os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))]:
+        if os.path.exists(candidate):
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip().strip("'\"")
+                            if k and k not in os.environ:
+                                os.environ[k] = v
+                break
+            except Exception:
+                pass
+
+_load_env_file()
+
 if HAS_PYDANTIC_SETTINGS:
     class Settings(BaseSettings):
         model_config = SettingsConfigDict(
@@ -31,9 +50,9 @@ if HAS_PYDANTIC_SETTINGS:
         ALGORITHM: str = "HS256"
         ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 day
         
-        # AI Models
-        EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
-        EMBEDDING_DIMENSION: int = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
+        # AI Models (Harmonized defaults: 384 for CPU/local, 1024 if BAAI/bge-m3 configured)
+        EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        EMBEDDING_DIMENSION: int = int(os.getenv("EMBEDDING_DIMENSION", "384"))
         SPARSE_MODEL: str = os.getenv("SPARSE_MODEL", "naver/splade-v3")
         RERANKER_MODEL: str = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-large")
         VLLM_API_BASE: str = os.getenv("VLLM_API_BASE", "http://localhost:8000/v1")
@@ -71,8 +90,8 @@ else:
         SECRET_KEY: str = os.getenv("SECRET_KEY", "unimm-super-secret-jwt-key-2026-cpcl-iocl-bpcl")
         ALGORITHM: str = "HS256"
         ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
-        EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
-        EMBEDDING_DIMENSION: int = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
+        EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        EMBEDDING_DIMENSION: int = int(os.getenv("EMBEDDING_DIMENSION", "384"))
         SPARSE_MODEL: str = os.getenv("SPARSE_MODEL", "naver/splade-v3")
         RERANKER_MODEL: str = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-large")
         VLLM_API_BASE: str = os.getenv("VLLM_API_BASE", "http://localhost:8000/v1")
@@ -90,3 +109,4 @@ else:
         CNMC_DIGITS: int = 8
 
     settings = Settings()
+

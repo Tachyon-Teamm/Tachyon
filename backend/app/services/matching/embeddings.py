@@ -10,10 +10,12 @@ from app.core.config import settings
 class EmbeddingService:
     _dense_model = None
     _sparse_model = None
+    _load_attempted: bool = False
 
     @classmethod
     def get_model(cls):
-        if cls._dense_model is None:
+        if not cls._load_attempted:
+            cls._load_attempted = True
             try:
                 from sentence_transformers import SentenceTransformer
                 cls._dense_model = SentenceTransformer(settings.EMBEDDING_MODEL, local_files_only=True)
@@ -25,39 +27,93 @@ class EmbeddingService:
                     cls._dense_model = None
         return cls._dense_model
 
+    @staticmethod
+    def build_canonical_text(specs: Optional[Dict[str, Any]] = None, raw_desc: str = "") -> str:
+        """
+        Synthesizes a structured, high-signal canonical text string from extracted specs
+        for optimal vector encoding across disparate CPSE ERP descriptions.
+        """
+        if specs:
+            parts = []
+            # High-priority semantic anchors in standard engineering order
+            if specs.get("item_noun"):
+                parts.append(str(specs["item_noun"]).strip())
+            if specs.get("nominal_size"):
+                parts.append(str(specs["nominal_size"]).strip())
+            if specs.get("pressure_class"):
+                parts.append(str(specs["pressure_class"]).strip())
+            if specs.get("schedule"):
+                parts.append(str(specs["schedule"]).strip())
+            if specs.get("moc"):
+                parts.append(str(specs["moc"]).strip())
+            if specs.get("end_connection"):
+                parts.append(str(specs["end_connection"]).strip())
+            if specs.get("standard_spec"):
+                parts.append(str(specs["standard_spec"]).strip())
+            if specs.get("clean_part_number"):
+                parts.append(str(specs["clean_part_number"]).strip())
+            elif specs.get("part_number"):
+                parts.append(str(specs["part_number"]).strip())
+            if specs.get("clearance_suffix"):
+                parts.append(str(specs["clearance_suffix"]).strip())
+
+            if parts:
+                return ", ".join(parts)
+
+        # Fallback to preprocessed raw text if specs are minimal
+        if raw_desc:
+            from app.services.normalization.domain_lexicon import DomainLexicon
+            return DomainLexicon.preprocess_text(raw_desc)
+        return ""
+
     @classmethod
     def generate_embedding(cls, text: str) -> List[float]:
         """
-        Generates a 1024-dimensional dense semantic embedding (BAAI/bge-m3).
+        Generates a dense semantic embedding (384-d / configured EMBEDDING_DIMENSION).
         """
+        if not text:
+            return cls._deterministic_hash_vector("", settings.EMBEDDING_DIMENSION)
+
         model = cls.get_model()
         if model is not None:
-            emb = model.encode(text, normalize_embeddings=True)
-            emb_list = emb.tolist()
-            # If loaded model is 384-d, pad or project to 1024 if needed
-            if len(emb_list) < settings.EMBEDDING_DIMENSION:
-                emb_list = emb_list + [0.0] * (settings.EMBEDDING_DIMENSION - len(emb_list))
-            elif len(emb_list) > settings.EMBEDDING_DIMENSION:
-                emb_list = emb_list[:settings.EMBEDDING_DIMENSION]
-            return emb_list
-        
-        # Deterministic zero-dependency hashing fallback for instant testing
+            try:
+                emb = model.encode(text, normalize_embeddings=True)
+                emb_list = emb.tolist() if hasattr(emb, "tolist") else list(emb)
+                if len(emb_list) < settings.EMBEDDING_DIMENSION:
+                    emb_list = emb_list + [0.0] * (settings.EMBEDDING_DIMENSION - len(emb_list))
+                elif len(emb_list) > settings.EMBEDDING_DIMENSION:
+                    emb_list = emb_list[:settings.EMBEDDING_DIMENSION]
+                return emb_list
+            except Exception as encode_err:
+                print(f"[EmbeddingService] encode fallback due to: {encode_err}")
+
+        # Deterministic zero-dependency hashing fallback for instant testing and air-gapped environments
         return cls._deterministic_hash_vector(text, settings.EMBEDDING_DIMENSION)
 
     @classmethod
     def generate_batch_embeddings(cls, texts: List[str]) -> List[List[float]]:
+        """
+        Generates dense semantic embeddings for a batch of strings.
+        """
+        if not texts:
+            return []
+
         model = cls.get_model()
         if model is not None:
-            embs = model.encode(texts, normalize_embeddings=True)
-            res = []
-            for emb in embs.tolist():
-                if len(emb) < settings.EMBEDDING_DIMENSION:
-                    emb = emb + [0.0] * (settings.EMBEDDING_DIMENSION - len(emb))
-                elif len(emb) > settings.EMBEDDING_DIMENSION:
-                    emb = emb[:settings.EMBEDDING_DIMENSION]
-                res.append(emb)
-            return res
-            
+            try:
+                embs = model.encode(texts, normalize_embeddings=True)
+                raw_list = embs.tolist() if hasattr(embs, "tolist") else [list(x) for x in embs]
+                res = []
+                for emb in raw_list:
+                    if len(emb) < settings.EMBEDDING_DIMENSION:
+                        emb = emb + [0.0] * (settings.EMBEDDING_DIMENSION - len(emb))
+                    elif len(emb) > settings.EMBEDDING_DIMENSION:
+                        emb = emb[:settings.EMBEDDING_DIMENSION]
+                    res.append(emb)
+                return res
+            except Exception as batch_err:
+                print(f"[EmbeddingService] batch encode fallback due to: {batch_err}")
+
         return [cls._deterministic_hash_vector(t, settings.EMBEDDING_DIMENSION) for t in texts]
 
     @classmethod
@@ -136,14 +192,31 @@ class EmbeddingService:
         return dict(sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True))
 
     @staticmethod
-    def _deterministic_hash_vector(text: str, dim: int = 1024) -> List[float]:
-        """Deterministic pseudo-embedding for testing environments without PyTorch/Numpy weights"""
+    def _deterministic_hash_vector(text: str, dim: int = 384) -> List[float]:
+        """
+        Deterministic pseudo-embedding for testing environments and air-gapped deployments.
+        Strips punctuation, performs subword character n-gram projections, and L2-normalizes.
+        """
         import hashlib
-        words = text.lower().split()
+        clean_text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text.lower())
+        tokens = [w for w in clean_text.split() if w]
+        if not tokens:
+            vec = [0.0] * dim
+            vec[0] = 1.0
+            return vec
+
+        # Subword n-grams (3-grams) for robust typo & token variant tolerance
+        subwords = []
+        for t in tokens:
+            subwords.append(t)
+            if len(t) >= 4:
+                for idx in range(len(t) - 2):
+                    subwords.append(t[idx:idx+3])
+
         if np is not None:
             vec = np.zeros(dim, dtype=np.float32)
-            for i, word in enumerate(words):
-                h = int(hashlib.md5(word.encode('utf-8')).hexdigest(), 16)
+            for item in subwords:
+                h = int(hashlib.md5(item.encode('utf-8')).hexdigest(), 16)
                 idx = h % dim
                 val = ((h >> 8) % 1000) / 500.0 - 1.0
                 vec[idx] += val
@@ -158,8 +231,8 @@ class EmbeddingService:
             return vec.tolist()
         else:
             vec_list = [0.0] * dim
-            for word in words:
-                h = int(hashlib.md5(word.encode('utf-8')).hexdigest(), 16)
+            for item in subwords:
+                h = int(hashlib.md5(item.encode('utf-8')).hexdigest(), 16)
                 idx = h % dim
                 val = ((h >> 8) % 1000) / 500.0 - 1.0
                 vec_list[idx] += val

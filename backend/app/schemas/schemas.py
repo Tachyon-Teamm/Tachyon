@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field
 
 # ----------------- Auth & User -----------------
@@ -43,6 +43,7 @@ class ColumnMappingItem(BaseModel):
 
 class ColumnMappingDetectResponse(BaseModel):
     file_name: str
+    upload_id: Optional[str] = None
     detected_columns: List[str]
     suggested_mappings: Dict[str, str] # source -> target
     confidence_scores: Dict[str, float]
@@ -64,6 +65,15 @@ class IngestionBatchResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class BatchProgressResponse(BaseModel):
+    id: int
+    status: str
+    total_rows: int
+    processed_rows: int
+    percent_complete: float
+    quality_score: Optional[float] = 1.0
+    error_message: Optional[str] = None
 
 # ----------------- Normalization & Extracted Specs -----------------
 class ExtractedSpecs(BaseModel):
@@ -110,6 +120,18 @@ class MaterialResponse(BaseModel):
         from_attributes = True
 
 # ----------------- Matching & Scoring -----------------
+class MatchJobResponse(BaseModel):
+    id: int
+    status: str
+    total_pairs_evaluated: int = 0
+    candidates_found: int = 0
+    error_message: Optional[str] = None
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
 class ScoreBreakdown(BaseModel):
     semantic_score: float
     attribute_score: float
@@ -149,7 +171,7 @@ class ClusterCardResponse(BaseModel):
 
 class ReviewActionRequest(BaseModel):
     cluster_group_id: str
-    decision_type: str # IDENTICAL, SUBSTITUTE, REJECT, SPLIT
+    decision_type: Literal["IDENTICAL", "SUBSTITUTE", "REJECT", "SPLIT"]
     custom_golden_description: Optional[str] = None
     selected_material_ids: Optional[List[int]] = None
     reviewer_notes: Optional[str] = None

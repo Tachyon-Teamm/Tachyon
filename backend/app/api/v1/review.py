@@ -1,5 +1,7 @@
-from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timezone
+from typing import List, Optional, Dict, Any, Union
+from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_
 from app.core.database import get_db, get_sync_db, get_sync_session
@@ -49,13 +51,12 @@ async def get_review_queue(
         veto_reason = None
         
         if candidates:
-            c0 = candidates[0]
-            comp_score = c0.composite_score
-            sem_score = c0.semantic_score
-            attr_score = c0.attribute_score
-            proc_score = c0.procurement_score
-            safety_veto = c0.safety_veto
-            veto_reason = c0.veto_reason
+            safety_veto = any(c.safety_veto for c in candidates)
+            veto_reason = next((c.veto_reason for c in candidates if c.safety_veto and c.veto_reason), None)
+            comp_score = round(sum(c.composite_score for c in candidates) / len(candidates), 4)
+            sem_score = round(sum(c.semantic_score for c in candidates) / len(candidates), 4)
+            attr_score = round(sum(c.attribute_score for c in candidates) / len(candidates), 4)
+            proc_score = round(sum(c.procurement_score for c in candidates) / len(candidates), 4)
             
         out.append({
             "id": item.id,
@@ -146,17 +147,34 @@ async def get_cluster_details(cluster_group_id: str, db: Session = Depends(get_d
             specs=specs_obj
         ))
 
-    # Determine aggregated scores
-    c0 = candidates[0] if candidates else None
-    scores = ScoreBreakdown(
-        semantic_score=c0.semantic_score if c0 else 0.0,
-        attribute_score=c0.attribute_score if c0 else 0.0,
-        procurement_score=c0.procurement_score if c0 else 0.0,
-        composite_score=c0.composite_score if c0 else 0.0,
-        safety_veto=c0.safety_veto if c0 else False,
-        veto_reason=c0.veto_reason if c0 else None,
-        confidence_tier=c0.confidence_tier if c0 else "LOW"
-    )
+    # Determine aggregated scores across all candidates in cluster
+    if candidates:
+        has_veto = any(c.safety_veto for c in candidates)
+        v_reason = next((c.veto_reason for c in candidates if c.safety_veto and c.veto_reason), None)
+        mean_comp = round(sum(c.composite_score for c in candidates) / len(candidates), 4)
+        mean_sem = round(sum(c.semantic_score for c in candidates) / len(candidates), 4)
+        mean_attr = round(sum(c.attribute_score for c in candidates) / len(candidates), 4)
+        mean_proc = round(sum(c.procurement_score for c in candidates) / len(candidates), 4)
+        tier = "LOW" if has_veto else ("HIGH" if mean_comp >= 0.90 else "MEDIUM")
+        scores = ScoreBreakdown(
+            semantic_score=mean_sem,
+            attribute_score=mean_attr,
+            procurement_score=mean_proc,
+            composite_score=mean_comp,
+            safety_veto=has_veto,
+            veto_reason=v_reason,
+            confidence_tier=tier
+        )
+    else:
+        scores = ScoreBreakdown(
+            semantic_score=0.0,
+            attribute_score=0.0,
+            procurement_score=0.0,
+            composite_score=0.0,
+            safety_veto=False,
+            veto_reason=None,
+            confidence_tier="LOW"
+        )
 
     # Synthesize proposed ISO 8000 description
     iso_synth = GoldenRecordService.synthesize_iso8000_description(materials)
@@ -191,10 +209,9 @@ APPROVED_RELATIONSHIPS = {
 @router.post("/action")
 async def execute_review_action(
     action: ReviewActionRequest,
-    db: Session = Depends(get_db),
     current_user: TokenData = Depends(get_current_user)
 ):
-    sync_db = next(get_sync_db())
+    sync_db = get_sync_session()
     try:
         review = sync_db.query(ReviewQueue).filter(ReviewQueue.cluster_group_id == action.cluster_group_id).first()
         if not review:
@@ -208,8 +225,28 @@ async def execute_review_action(
             
         materials = sync_db.query(Material).filter(Material.id.in_(list(mat_ids))).all()
         
-        if action.selected_material_ids:
+        if action.selected_material_ids is not None:
             materials = [m for m in materials if m.id in action.selected_material_ids]
+
+        cnmc_code_str = None
+        decision_upper = action.decision_type.upper()
+        reviewer_user_id = getattr(current_user, "user_id", None) or getattr(current_user, "cpse_id", None) or 1
+
+        # Idempotency check: if cluster is already approved, return existing minted CNMC
+        if review.status == "APPROVED" and decision_upper in APPROVED_RELATIONSHIPS:
+            existing_golden = sync_db.query(GoldenRecord).filter(GoldenRecord.review_queue_id == review.id).first()
+            existing_cnmc = sync_db.query(CNMCCode).filter(CNMCCode.golden_record_id == existing_golden.id).first() if existing_golden else None
+            return {
+                "status": "SUCCESS",
+                "cluster_group_id": action.cluster_group_id,
+                "decision": review.decision_type or decision_upper,
+                "minted_cnmc": existing_cnmc.code if existing_cnmc else None,
+                "message": "Cluster already approved"
+            }
+
+        # Guard against empty material selection
+        if decision_upper in APPROVED_RELATIONSHIPS and not materials:
+            raise HTTPException(status_code=400, detail="Cannot approve cluster with 0 selected materials")
 
         # Active Learning Telemetry Store: Record decision for contrastive fine-tuning
         for c in cand_res:
@@ -225,12 +262,9 @@ async def execute_review_action(
                 },
                 human_decision=action.decision_type,
                 reviewer_notes=action.reviewer_notes,
-                reviewer_id=None
+                reviewer_id=reviewer_user_id
             )
             sync_db.add(feedback_entry)
-
-        cnmc_code_str = None
-        decision_upper = action.decision_type.upper()
 
         if decision_upper in APPROVED_RELATIONSHIPS:
             # 1. Synthesize or take custom Golden Record
@@ -249,7 +283,8 @@ async def execute_review_action(
                 end_connection=synth["end_connection"],
                 standard_spec=synth["standard_spec"],
                 base_uom=synth["base_uom"],
-                canonical_attributes=synth["canonical_attributes"]
+                technical_attributes=synth.get("technical_attributes", {}),
+                canonical_attributes=synth.get("canonical_attributes", {})
             )
             sync_db.add(golden)
             sync_db.flush()
@@ -264,6 +299,8 @@ async def execute_review_action(
             review.status = "APPROVED"
             review.decision_type = decision_upper
             review.reviewer_notes = action.reviewer_notes
+            review.reviewer_id = reviewer_user_id
+            review.reviewed_at = datetime.now(timezone.utc)
             
             # Log Audit Event
             AuditService.log_action(
@@ -271,6 +308,7 @@ async def execute_review_action(
                 action="CNMC_MINTED_AND_CROSSWALK_REGISTERED",
                 entity_type="CNMC_CODE",
                 entity_id=cnmc_code_str,
+                user_id=reviewer_user_id,
                 evidence={
                     "cluster_group_id": action.cluster_group_id,
                     "materials_count": len(materials),
@@ -283,11 +321,15 @@ async def execute_review_action(
             review.status = "REJECTED"
             review.decision_type = decision_upper
             review.reviewer_notes = action.reviewer_notes
+            review.reviewer_id = reviewer_user_id
+            review.reviewed_at = datetime.now(timezone.utc)
             
         elif decision_upper == "SPLIT":
             review.status = "SPLIT"
             review.decision_type = "SPLIT"
             review.reviewer_notes = action.reviewer_notes
+            review.reviewer_id = reviewer_user_id
+            review.reviewed_at = datetime.now(timezone.utc)
 
         sync_db.commit()
         return {
@@ -299,15 +341,27 @@ async def execute_review_action(
     finally:
         sync_db.close()
 
+class BulkApproveRequest(BaseModel):
+    cluster_group_ids: List[str]
+    reviewer_notes: Optional[str] = "Bulk approved high-confidence matches"
+
 @router.post("/bulk-approve")
 def bulk_approve_clusters(
-    cluster_group_ids: List[str],
+    payload: Union[List[str], BulkApproveRequest] = Body(...),
     reviewer_notes: Optional[str] = "Bulk approved high-confidence matches",
     current_user: TokenData = Depends(get_current_user)
 ):
     """
     Fast-Track Bulk Approval for Tier 1 High Confidence (>=95%) Clusters.
+    Supports both raw JSON array (['cluster_1']) and object payloads ({'cluster_group_ids': ['cluster_1']}).
     """
+    if isinstance(payload, list):
+        cluster_group_ids = payload
+        effective_notes = reviewer_notes or "Bulk approved high-confidence matches"
+    else:
+        cluster_group_ids = payload.cluster_group_ids
+        effective_notes = payload.reviewer_notes or reviewer_notes or "Bulk approved high-confidence matches"
+
     sync_db = get_sync_session()
     approved_clusters = []
     try:
@@ -323,7 +377,10 @@ def bulk_approve_clusters(
                 mat_ids.add(c.material_a_id)
                 mat_ids.add(c.material_b_id)
 
-            mats = sync_db.query(Material).filter(Material.id.in_(mat_ids)).all() if mat_ids else []
+            if not mat_ids:
+                continue
+
+            mats = sync_db.query(Material).filter(Material.id.in_(list(mat_ids))).all()
             if not mats:
                 continue
 
@@ -349,16 +406,20 @@ def bulk_approve_clusters(
             cnmc_code = CNMCMinter.mint_next_cnmc(sync_db, golden.id)
             cnmc_obj = sync_db.query(CNMCCode).filter(CNMCCode.code == cnmc_code).first()
 
+            reviewer_user_id = getattr(current_user, "user_id", None) or getattr(current_user, "cpse_id", None) or 1
             CrosswalkService.register_mappings(sync_db, cnmc_obj.id, mats, mapping_type="IDENTICAL")
             review.status = "APPROVED"
             review.decision_type = "IDENTICAL"
-            review.reviewer_notes = reviewer_notes
+            review.reviewer_notes = effective_notes
+            review.reviewer_id = reviewer_user_id
+            review.reviewed_at = datetime.now(timezone.utc)
 
             AuditService.log_action(
                 sync_db,
                 action="BULK_REVIEW_APPROVED",
                 entity_type="CNMC_CODE",
                 entity_id=cnmc_code,
+                user_id=reviewer_user_id,
                 evidence={"cluster_group_id": cid, "material_count": len(mats)}
             )
             approved_clusters.append({"cluster_group_id": cid, "cnmc": cnmc_code})
@@ -389,14 +450,18 @@ def dispute_cluster(
         if not review:
             raise HTTPException(status_code=404, detail="Review cluster not found")
 
+        reviewer_user_id = getattr(current_user, "user_id", None) or getattr(current_user, "cpse_id", None) or 1
         review.status = "DISPUTED"
         review.reviewer_notes = f"[DISPUTED by {dissenting_cpse_code or 'CPSE Steward'}]: {dispute_reason}"
+        review.reviewer_id = reviewer_user_id
+        review.reviewed_at = datetime.now(timezone.utc)
 
         AuditService.log_action(
             sync_db,
             action="MULTI_CPSE_DISPUTE_FILED",
             entity_type="REVIEW_QUEUE",
             entity_id=cluster_group_id,
+            user_id=reviewer_user_id,
             evidence={
                 "cluster_group_id": cluster_group_id,
                 "dispute_reason": dispute_reason,

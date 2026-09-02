@@ -7,6 +7,10 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
 from app.core.database import Base
+from app.core.config import settings
+
+def utc_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 class CPSE(Base):
     __tablename__ = "cpses"
@@ -17,7 +21,7 @@ class CPSE(Base):
     sector = Column(String(50), nullable=False, default="GENERAL") # OIL_AND_GAS, POWER, STEEL, MINING, CHEMICALS, HEAVY_ENG, GENERAL
     erp_system = Column(String(50), default="SAP_S4HANA") # SAP_ECC, SAP_S4HANA, ORACLE, CUSTOM
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     users = relationship("User", back_populates="cpse")
     materials = relationship("Material", back_populates="cpse")
@@ -33,7 +37,7 @@ class User(Base):
     hashed_password = Column(String(255), nullable=False)
     role = Column(String(20), nullable=False, default="viewer") # admin, reviewer, data_steward, viewer
     cpse_id = Column(Integer, ForeignKey("cpses.id"), nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     cpse = relationship("CPSE", back_populates="users")
     reviews = relationship("ReviewQueue", back_populates="reviewer")
@@ -50,7 +54,7 @@ class IngestionBatch(Base):
     processed_rows = Column(Integer, default=0)
     status = Column(String(30), default="PENDING") # PENDING, PROCESSING, COMPLETED, FAILED
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     cpse = relationship("CPSE", back_populates="ingestion_batches")
     raw_materials = relationship("RawMaterial", back_populates="batch", cascade="all, delete-orphan")
@@ -63,7 +67,7 @@ class ColumnMapping(Base):
     name = Column(String(100), nullable=False)
     mapping_config = Column(JSON, nullable=False) # e.g. {"MATERIAL_NO": "material_code", "ITEM_SPEC": "short_description"}
     is_default = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
 
 class RawMaterial(Base):
     __tablename__ = "raw_materials"
@@ -73,7 +77,7 @@ class RawMaterial(Base):
     cpse_id = Column(Integer, ForeignKey("cpses.id"), nullable=False)
     row_index = Column(Integer, nullable=False)
     raw_data = Column(JSON, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     batch = relationship("IngestionBatch", back_populates="raw_materials")
     material = relationship("Material", back_populates="raw_material", uselist=False)
@@ -97,7 +101,7 @@ class NormalizedMaterial(Base):
     technical_attributes = Column(JSON, default=dict)
     quality_score = Column(Float, default=1.0) # 0.0 to 1.0 completeness/quality score
     status = Column(String(30), default="STAGED") # STAGED, NORMALIZED, PROMOTED, ERROR
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     cpse = relationship("CPSE")
     raw_material = relationship("RawMaterial", back_populates="normalized_material")
@@ -110,7 +114,7 @@ class TaxonomyCategory(Base):
     name = Column(String(150), nullable=False)
     level = Column(Integer, default=1)
     parent_id = Column(Integer, ForeignKey("taxonomy_categories.id"), nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     parent = relationship("TaxonomyCategory", remote_side=[id])
 
@@ -129,7 +133,7 @@ class TaxonomyNode(Base):
     level = Column(Integer, default=1)
     parent_id = Column(Integer, ForeignKey("taxonomy_nodes.id"), nullable=True)
     description = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     parent = relationship("TaxonomyNode", remote_side=[id])
     attributes = relationship("AttributeDictionary", back_populates="taxonomy_node", cascade="all, delete-orphan")
@@ -149,7 +153,7 @@ class AttributeDictionary(Base):
     is_critical_safety_invariant = Column(Boolean, default=False)
     veto_threshold = Column(Float, default=0.0) # 0.0 for exact equality match
     allowed_values = Column(JSON, default=list)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     taxonomy_node = relationship("TaxonomyNode", back_populates="attributes")
 
@@ -185,8 +189,8 @@ class Material(Base):
     technical_attributes = Column(JSON, default=dict)
     extracted_attributes = Column(JSON, default=dict)
     status = Column(String(30), default="ACTIVE") # ACTIVE, MERGED, SUPERSEDED
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
     
     cpse = relationship("CPSE", back_populates="materials")
     raw_material = relationship("RawMaterial", back_populates="material")
@@ -204,10 +208,10 @@ class MaterialEmbedding(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=False, unique=True, index=True)
-    embedding = Column(Vector(1024), nullable=False) # 1024 dimensions for BAAI/bge-m3
+    embedding = Column(Vector(settings.EMBEDDING_DIMENSION), nullable=False)
     sparse_vector = Column(JSON, default=dict) # Learned sparse representation (SPLADE-v3 / BM25)
-    model_name = Column(String(50), default="BAAI/bge-m3")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    model_name = Column(String(50), default=settings.EMBEDDING_MODEL)
+    created_at = Column(DateTime, default=utc_now)
     
     material = relationship("Material", back_populates="embedding")
 
@@ -218,7 +222,7 @@ class MaterialClassification(Base):
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=False, index=True)
     category_id = Column(Integer, ForeignKey("taxonomy_categories.id"), nullable=False, index=True)
     confidence = Column(Float, default=1.0)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     material = relationship("Material", back_populates="classifications")
     category = relationship("TaxonomyCategory")
@@ -238,7 +242,7 @@ class ProcurementHistory(Base):
     quantity = Column(Float, nullable=False, default=1.0)
     currency = Column(String(10), default="INR")
     total_spend = Column(Float, default=0.0)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     material = relationship("Material", back_populates="procurement_records")
 
@@ -262,7 +266,8 @@ class MatchJob(Base):
     total_pairs_evaluated = Column(Integer, default=0)
     candidates_found = Column(Integer, default=0)
     parameters = Column(JSON, default=dict)
-    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, default=utc_now)
     completed_at = Column(DateTime, nullable=True)
     
     candidates = relationship("MatchCandidate", back_populates="job", cascade="all, delete-orphan")
@@ -282,9 +287,10 @@ class MatchCandidate(Base):
     
     safety_veto = Column(Boolean, default=False)
     veto_reason = Column(String(255), nullable=True)
+    suggested_route = Column(String(30), default="IDENTICAL") # IDENTICAL, SUBSTITUTE, REJECT
     confidence_tier = Column(String(20), default="LOW") # HIGH (>=90%), MEDIUM (70-89%), LOW (<70%)
     cluster_group_id = Column(String(50), nullable=True, index=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     job = relationship("MatchJob", back_populates="candidates")
     material_a = relationship("Material", foreign_keys=[material_a_id])
@@ -305,7 +311,7 @@ class ReviewQueue(Base):
     decision_type = Column(String(30), nullable=True) # IDENTICAL, NEAR_DUPLICATE, SUBSTITUTE, REJECTED
     reviewer_notes = Column(Text, nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     candidate = relationship("MatchCandidate", back_populates="review_entry")
     reviewer = relationship("User", back_populates="reviews")
@@ -337,8 +343,8 @@ class GoldenRecord(Base):
     # Temporal Versioning (SCD-2)
     version_number = Column(Integer, default=1, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
     
     review_queue = relationship("ReviewQueue", back_populates="golden_record")
     cnmc_code = relationship("CNMCCode", back_populates="golden_record", uselist=False)
@@ -357,7 +363,7 @@ class GoldenRecordVersion(Base):
     technical_attributes = Column(JSON, default=dict)
     changed_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     change_summary = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     golden_record = relationship("GoldenRecord", back_populates="versions")
     changed_by = relationship("User")
@@ -369,7 +375,7 @@ class CNMCCode(Base):
     code = Column(String(50), unique=True, nullable=False, index=True) # e.g. CNMC-00001042-8
     golden_record_id = Column(Integer, ForeignKey("golden_records.id"), nullable=False, unique=True, index=True)
     is_active = Column(Boolean, default=True)
-    issued_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    issued_at = Column(DateTime, default=utc_now)
     
     golden_record = relationship("GoldenRecord", back_populates="cnmc_code")
     crosswalk_links = relationship("Crosswalk", back_populates="cnmc", cascade="all, delete-orphan")
@@ -388,7 +394,7 @@ class Crosswalk(Base):
     mapping_type = Column(String(50), default="IDENTICAL") 
     # IDENTICAL, NEAR_DUPLICATE, FUNCTIONAL_EQUIVALENT, SUBSTITUTE, ALTERNATIVE_BRAND, KIT_COMPONENT, INCOMPATIBLE
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     cnmc = relationship("CNMCCode", back_populates="crosswalk_links")
     cpse = relationship("CPSE", back_populates="crosswalk_entries")
@@ -413,7 +419,7 @@ class ReviewFeedback(Base):
     human_decision = Column(String(50), nullable=False) # APPROVED_IDENTICAL, APPROVED_SUBSTITUTE, REJECTED, SPLIT
     reviewer_notes = Column(Text, nullable=True)
     reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     candidate = relationship("MatchCandidate")
     reviewer = relationship("User")
@@ -426,7 +432,7 @@ class MaterialSubstitution(Base):
     target_cnmc_id = Column(Integer, ForeignKey("cnmc_codes.id"), nullable=False, index=True)
     substitution_type = Column(String(50), default="DIRECT_EQUIVALENT") # DIRECT_EQUIVALENT, UPGRADED_MATERIAL, HIGHER_PRESSURE
     engineering_notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     source_cnmc = relationship("CNMCCode", foreign_keys=[source_cnmc_id], back_populates="source_substitutions")
     target_cnmc = relationship("CNMCCode", foreign_keys=[target_cnmc_id], back_populates="target_substitutions")
@@ -440,6 +446,6 @@ class AuditLog(Base):
     entity_type = Column(String(50), nullable=True)
     entity_id = Column(String(50), nullable=True)
     evidence = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utc_now)
     
     user = relationship("User", back_populates="audit_logs")
