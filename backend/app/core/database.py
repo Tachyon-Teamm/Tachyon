@@ -48,3 +48,7 @@ def get_sync_db():
         yield db
     finally:
         db.close()
+
+def get_sync_session():
+    """Returns a standalone synchronous SQLAlchemy session."""
+    return SyncSessionLocal()

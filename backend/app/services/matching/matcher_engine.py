@@ -10,6 +10,7 @@ from app.models.models import (
 from app.services.matching.embeddings import EmbeddingService
 from app.services.matching.guardrails import SafetyGuardrails
 from app.services.matching.scorer import CompositeScorer
+from app.services.matching.cluster_engine import ClusterEngine
 
 class MatcherEngine:
     @classmethod
@@ -109,7 +110,8 @@ class MatcherEngine:
                             specs_a=specs_a,
                             specs_b=specs_b,
                             proc_a=proc_a,
-                            proc_b=proc_b
+                            proc_b=proc_b,
+                            category=mat_a.item_noun
                         )
                         
                         # Determine cluster group identifier

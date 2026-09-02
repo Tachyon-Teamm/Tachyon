@@ -1,8 +1,9 @@
 import re
 from typing import Dict
 
-# Indian Refinery & Oil/Gas colloquial terms -> Standard Engineering terms
+# Multi-Sector Engineering Lexicons (Oil & Gas, Power, Steel, Mining, Electrical)
 COLLOQUIAL_TERMS: Dict[str, str] = {
+    # Oil & Gas / Refinery
     r"\bJAALI\s*WALA\b": "SPIRAL WOUND",
     r"\bJALI\s*WALA\b": "SPIRAL WOUND",
     r"\bJALIWALA\b": "SPIRAL WOUND",
@@ -24,11 +25,38 @@ COLLOQUIAL_TERMS: Dict[str, str] = {
     r"\bASSY\b": "ASSEMBLY",
     r"\bCARTRG\b": "CARTRIDGE",
     r"\bTEMP\b": "TEMPERATURE",
-    r"\bPRESS\b": "PRESSURE"
+    r"\bPRESS\b": "PRESSURE",
+    r"\bWCB\b": "ASTM A216 WCB",
+    r"\bSCH\b": "SCHEDULE",
+    
+    # Power & Electrical
+    r"\bXFRMR\b": "TRANSFORMER",
+    r"\bTRANSF\b": "TRANSFORMER",
+    r"\bSWGR\b": "SWITCHGEAR",
+    r"\bINSLTR\b": "INSULATOR",
+    r"\bCBL\b": "CABLE",
+    r"\bCONTR\b": "CONTACTOR",
+    r"\bRLY\b": "RELAY",
+    r"\bCKT\s*BRKR\b": "CIRCUIT BREAKER",
+    r"\bLT\s*CABLE\b": "LOW TENSION CABLE",
+    r"\bHT\s*CABLE\b": "HIGH TENSION CABLE",
+    
+    # Steel & Heavy Engineering
+    r"\bTMT\b": "THERMO MECHANICALLY TREATED STEEL BAR",
+    r"\bBLT\b": "BOLT",
+    r"\bFASTNR\b": "FASTENER",
+    r"\bSTRUC\s*STL\b": "STRUCTURAL STEEL",
+    
+    # Mining & Material Handling
+    r"\bCVYR\b": "CONVEYOR",
+    r"\bHYD\b": "HYDRAULIC",
+    r"\bPMP\b": "PUMP",
+    r"\bGRBX\b": "GEARBOX"
 }
 
-# Equivalent Engineering Standards Dictionary
+# Equivalent Engineering Standards Dictionary across sectors
 STANDARDS_EQUIVALENCE: Dict[str, str] = {
+    # Piping & Valves (ASME / ANSI / API / BS / ISO)
     "ANSI B16.5": "ASME B16.5",
     "ANSI B16.34": "ASME B16.34",
     "ANSI B16.10": "ASME B16.10",
@@ -38,18 +66,26 @@ STANDARDS_EQUIVALENCE: Dict[str, str] = {
     "API 6D": "ISO 14313",
     "BS 5351": "ISO 17292",
     "BS 1873": "BS 1873",
-    "BS 1868": "BS 1868"
+    "BS 1868": "BS 1868",
+    
+    # Steel & Construction Standards (IS / ASTM)
+    "IS 2062": "IS 2062 (STRUCTURAL STEEL)",
+    "IS 1786": "IS 1786 (HIGH STRENGTH DEFORMED STEEL BARS)",
+    
+    # Electrical Standards (IEC / IS)
+    "IS 7098": "IS 7098 (XLPE INSULATED CABLES)",
+    "IEC 60947": "IEC 60947 (LOW-VOLTAGE SWITCHGEAR)"
 }
 
 class DomainLexicon:
     @staticmethod
-    def preprocess_text(text: str) -> str:
+    def preprocess_text(text: str, sector: str = "GENERAL") -> str:
         if not text:
             return ""
         
         result = text.upper()
         
-        # Replace colloquial Indian plant phrases
+        # Replace colloquial phrases & abbreviations across sectors
         for pattern, standard in COLLOQUIAL_TERMS.items():
             result = re.sub(pattern, standard, result, flags=re.IGNORECASE)
             

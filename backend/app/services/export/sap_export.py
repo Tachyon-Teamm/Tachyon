@@ -53,7 +53,7 @@ class SAPExportService:
                 "M",                                   # Mechanical Engineering
                 golden.standardized_description[:40] if golden else mat.short_description[:40],  # SAP 40-char limit
                 golden.base_uom if golden else (mat.base_uom or "EA"),
-                "40141600",                            # UNSPSC Group
+                (golden.category_code if golden else None) or mat.category_code or "40141600",
                 r.local_material_code,
                 r.mapping_type,
                 mat.package_multiplier if mat.base_uom == "KG" else "1.0",

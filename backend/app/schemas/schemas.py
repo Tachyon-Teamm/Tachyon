@@ -163,6 +163,8 @@ class GoldenRecordResponse(BaseModel):
     end_connection: Optional[str] = None
     standard_spec: Optional[str] = None
     base_uom: str
+    version_number: int = 1
+    technical_attributes: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
     class Config:

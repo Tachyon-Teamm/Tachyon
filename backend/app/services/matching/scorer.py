@@ -49,6 +49,11 @@ class CompositeScorer:
             "item_noun": 0.30,
             "nominal_size": 0.25,
             "pressure_class": 0.20,
+            "voltage_rating": 0.30,
+            "current_rating": 0.20,
+            "thread_size": 0.25,
+            "length": 0.15,
+            "pole_count": 0.15,
             "moc": 0.15,
             "end_connection": 0.05,
             "schedule": 0.05
@@ -126,6 +131,17 @@ class CompositeScorer:
             
         return min(1.0, max(0.0, score))
 
+    CATEGORY_WEIGHTS: Dict[str, Dict[str, float]] = {
+        "VALVE": {"sem": 0.30, "attr": 0.50, "proc": 0.20},
+        "PIPE": {"sem": 0.25, "attr": 0.55, "proc": 0.20},
+        "BEARING": {"sem": 0.20, "attr": 0.60, "proc": 0.20},
+        "FASTENER": {"sem": 0.20, "attr": 0.65, "proc": 0.15},
+        "ELECTRICAL": {"sem": 0.25, "attr": 0.60, "proc": 0.15},
+        "TRANSFORMER": {"sem": 0.25, "attr": 0.60, "proc": 0.15},
+        "CABLE": {"sem": 0.25, "attr": 0.60, "proc": 0.15},
+        "GENERAL": {"sem": 0.40, "attr": 0.35, "proc": 0.25}
+    }
+
     @classmethod
     def compute_composite(
         cls,
@@ -137,17 +153,42 @@ class CompositeScorer:
         proc_b: Dict[str, Any],
         weight_sem: float = 0.40,
         weight_attr: float = 0.35,
-        weight_proc: float = 0.25
+        weight_proc: float = 0.25,
+        category: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Executes the composite formula:
-        Score = 0.40(S_sem) + 0.35(S_attr) + 0.25(S_proc)
+        Executes the composite formula with category weighting and adaptive fallbacks:
+        Score = w_sem(S_sem) + w_attr(S_attr) + w_proc(S_proc)
         """
+        # Apply category profile if provided and weights were not custom
+        if category and category.upper() in cls.CATEGORY_WEIGHTS:
+            profile = cls.CATEGORY_WEIGHTS[category.upper()]
+            weight_sem = profile["sem"]
+            weight_attr = profile["attr"]
+            weight_proc = profile["proc"]
+
         s_sem = cls.calculate_cosine_similarity(vec_a, vec_b) if vec_a and vec_b else 0.0
         s_attr = cls.calculate_attribute_overlap(specs_a, specs_b)
         s_proc = cls.calculate_procurement_score(proc_a, proc_b)
 
-        composite = (weight_sem * s_sem) + (weight_attr * s_attr) + (weight_proc * s_proc)
+        # Adaptive weight normalization if procurement data is missing or confidential
+        has_proc = bool(
+            proc_a and proc_b and
+            (proc_a.get("unit_price") or proc_a.get("vendor_normalized")) and
+            (proc_b.get("unit_price") or proc_b.get("vendor_normalized"))
+        )
+        if not has_proc and weight_proc > 0:
+            denom = weight_sem + weight_attr
+            if denom > 0:
+                w_sem = weight_sem / denom
+                w_attr = weight_attr / denom
+                w_proc = 0.0
+            else:
+                w_sem, w_attr, w_proc = 0.5, 0.5, 0.0
+        else:
+            w_sem, w_attr, w_proc = weight_sem, weight_attr, weight_proc
+
+        composite = (w_sem * s_sem) + (w_attr * s_attr) + (w_proc * s_proc)
         composite = round(min(1.0, max(0.0, composite)), 4)
 
         # Confidence Tier Routing
@@ -164,8 +205,8 @@ class CompositeScorer:
             "procurement_score": round(s_proc, 4),
             "confidence_tier": tier,
             "weights": {
-                "semantic": weight_sem,
-                "attribute": weight_attr,
-                "procurement": weight_proc
+                "semantic": round(w_sem, 4),
+                "attribute": round(w_attr, 4),
+                "procurement": round(w_proc, 4)
             }
         }

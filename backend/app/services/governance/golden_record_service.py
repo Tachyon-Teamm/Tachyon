@@ -79,8 +79,46 @@ class GoldenRecordService:
         if standard_spec:
             modifiers.append(standard_spec)
 
+        # Collect multi-sector modifiers
+        voltage_rating = None
+        current_rating = None
+        thread_size = None
+        length = None
+        for m in materials:
+            ext = getattr(m, "technical_attributes", None) or getattr(m, "extracted_attributes", {}) or {}
+            if isinstance(ext, dict):
+                voltage_rating = voltage_rating or ext.get("voltage_rating")
+                current_rating = current_rating or ext.get("current_rating")
+                thread_size = thread_size or ext.get("thread_size")
+                length = length or ext.get("length")
+
+        if voltage_rating:
+            modifiers.append(voltage_rating)
+        if current_rating:
+            modifiers.append(current_rating)
+        if thread_size:
+            modifiers.append(thread_size)
+        if length:
+            modifiers.append(length)
+
         mod_str = ", ".join(modifiers)
         standardized_desc = f"{item_noun}, {mod_str}" if mod_str else item_noun
+
+        canon_dict = {
+            "item_noun": item_noun,
+            "nominal_size": nominal_size,
+            "pressure_class": pressure_class,
+            "moc": moc,
+            "schedule": schedule,
+            "end_connection": end_connection,
+            "standard_spec": standard_spec,
+            "voltage_rating": voltage_rating,
+            "current_rating": current_rating,
+            "thread_size": thread_size,
+            "length": length
+        }
+        # Filter None
+        clean_canon = {k: v for k, v in canon_dict.items() if v is not None}
 
         return {
             "standardized_description": standardized_desc,
@@ -93,13 +131,36 @@ class GoldenRecordService:
             "end_connection": end_connection,
             "standard_spec": standard_spec,
             "base_uom": base_uom,
-            "canonical_attributes": {
-                "item_noun": item_noun,
-                "nominal_size": nominal_size,
-                "pressure_class": pressure_class,
-                "moc": moc,
-                "schedule": schedule,
-                "end_connection": end_connection,
-                "standard_spec": standard_spec,
-            }
+            "technical_attributes": clean_canon,
+            "canonical_attributes": clean_canon
         }
+
+    @staticmethod
+    def create_version_snapshot(
+        db,
+        golden_record_id: int,
+        changed_by_user_id: Optional[int] = None,
+        change_summary: str = "Golden Record revision"
+    ):
+        """
+        Captures an immutable snapshot in GoldenRecordVersion and increments version_number.
+        """
+        from app.models.models import GoldenRecord, GoldenRecordVersion
+
+        gr = db.query(GoldenRecord).filter(GoldenRecord.id == golden_record_id).first()
+        if not gr:
+            return None
+
+        # Create version record
+        version_entry = GoldenRecordVersion(
+            golden_record_id=gr.id,
+            version_number=gr.version_number,
+            standardized_description=gr.standardized_description,
+            technical_attributes=gr.technical_attributes or gr.canonical_attributes or {},
+            changed_by_user_id=changed_by_user_id,
+            change_summary=change_summary
+        )
+        db.add(version_entry)
+        gr.version_number += 1
+        db.flush()
+        return version_entry
