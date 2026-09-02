@@ -394,6 +394,31 @@ export default function ReviewQueuePage() {
                     <Split className="h-3.5 w-3.5" />
                     <span>Split Cluster</span>
                   </button>
+                  <button
+                    onClick={async () => {
+                      if (!selectedClusterId) return;
+                      const reason = window.prompt("Enter technical reason for CPSE dispute arbitration:");
+                      if (!reason) return;
+                      setActionLoading(true);
+                      try {
+                        await fetch(`/api/v1/review/dispute?cluster_group_id=${encodeURIComponent(selectedClusterId)}&dispute_reason=${encodeURIComponent(reason)}`, {
+                          method: "POST",
+                          headers: { "Authorization": `Bearer ${localStorage.getItem("token") || ""}` }
+                        });
+                        setActionMessage("Dispute recorded. Escalated to Lead Arbiter.");
+                        await loadQueue();
+                      } catch (e: any) {
+                        alert(`Dispute notice: ${e.message}`);
+                      } finally {
+                        setActionLoading(false);
+                      }
+                    }}
+                    disabled={actionLoading}
+                    className="flex items-center space-x-1.5 px-3.5 py-2 bg-amber-950/30 hover:bg-amber-900/50 text-amber-300 border border-amber-800/40 rounded-xl text-xs font-medium apple-press transition disabled:opacity-50"
+                  >
+                    <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
+                    <span>File Dispute</span>
+                  </button>
                 </div>
 
                 <div className="flex items-center space-x-3">

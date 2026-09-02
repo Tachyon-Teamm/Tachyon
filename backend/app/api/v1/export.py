@@ -8,7 +8,7 @@ router = APIRouter(prefix="/export", tags=["SAP LSMW / LTMC Export"])
 
 @router.get("/sap-lsmw-csv")
 async def export_sap_lsmw_csv(
-    cpse_code: Optional[str] = Query(None, description="CPCL, IOCL, or BPCL")
+    cpse_code: Optional[str] = Query(None, description="Filter by CPSE code (e.g. CPCL, IOCL, BPCL, NTPC, ONGC, SAIL)")
 ):
     db = next(get_sync_db())
     try:

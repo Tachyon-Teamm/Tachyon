@@ -83,6 +83,18 @@ class SpecExtractor:
             specs["item_noun"] = "MECHANICAL SEAL"
         elif re.search(r'\bGREASE\b|\bLUBRICANT\b|\bOIL\b', desc):
             specs["item_noun"] = "LUBRICANT / GREASE"
+        elif re.search(r'\bTRANSFORMER\b|\bXFRMR\b', desc):
+            specs["item_noun"] = "TRANSFORMER"
+        elif re.search(r'\bSWITCHGEAR\b|\bSWGR\b', desc):
+            specs["item_noun"] = "SWITCHGEAR"
+        elif re.search(r'\bCABLE\b|\bWIRE\b', desc):
+            specs["item_noun"] = "CABLE"
+        elif re.search(r'\bCIRCUIT\s*BREAKER\b|\bMCB\b|\bMCCB\b|\bACB\b', desc):
+            specs["item_noun"] = "CIRCUIT BREAKER"
+        elif re.search(r'\bCONTACTOR\b', desc):
+            specs["item_noun"] = "CONTACTOR"
+        elif re.search(r'\bBOLT\b|\bNUT\b|\bSTUD\b|\bFASTENER\b', desc):
+            specs["item_noun"] = "FASTENER"
 
         # 2. Nominal Size Extraction
         # Check compound fraction first: e.g. 1-1/2", 1 1/2", 2-1/2", 1-1/4"
@@ -205,5 +217,32 @@ class SpecExtractor:
             specs["is_kit_or_assembly"] = True
         else:
             specs["is_kit_or_assembly"] = False
+
+        # 10. Electrical Specifications (Voltage, Current, Poles)
+        volt_pat = re.search(r'\b(\d+(?:\.\d+)?\s*(?:KV|VOLTS?|V))\b', desc)
+        if volt_pat:
+            specs["voltage_rating"] = volt_pat.group(1).upper()
+            
+        curr_pat = re.search(r'\b(\d+(?:\.\d+)?\s*(?:AMPS?|A|KA))\b', desc)
+        if curr_pat and not re.search(r'\b(?:ASTM|ANSI|ASME)\b', desc):
+            specs["current_rating"] = curr_pat.group(1).upper()
+            
+        pole_pat = re.search(r'\b(SINGLE\s*POLE|1P|2P|TWO\s*POLE|3P|THREE\s*POLE|4P|FOUR\s*POLE|TPN|DP)\b', desc)
+        if pole_pat:
+            specs["pole_count"] = pole_pat.group(1).upper()
+
+        # 11. Fastener Specifications (Metric / Imperial Threads & Length)
+        thread_pat = re.search(r'\b(M\d+(?:\.\d+)?)\s*(?:X\s*(\d+(?:\.\d+)?))?\b', desc)
+        if thread_pat:
+            specs["thread_size"] = thread_pat.group(1).upper()
+            if thread_pat.group(2):
+                specs["length"] = f"{thread_pat.group(2)} MM"
+
+        # 12. Dynamic Technical Attributes Dictionary (PIM schema-on-read)
+        tech_attrs = {}
+        for k, v in specs.items():
+            if v is not None and k not in ("raw_preprocessed", "technical_attributes") and not (isinstance(v, bool) and not v):
+                tech_attrs[k] = v
+        specs["technical_attributes"] = tech_attrs
             
         return specs

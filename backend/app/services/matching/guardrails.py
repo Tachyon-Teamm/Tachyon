@@ -86,4 +86,21 @@ class SafetyGuardrails:
             elif clearance_a != clearance_b:
                 return True, f"Bearing Clearance Modifier Difference: '{clearance_a or 'STD'}' vs '{clearance_b or 'STD'}'", "SUBSTITUTE"
 
+        # 8. Electrical Voltage & Current Rating Invariants
+        volt_a = specs_a.get("voltage_rating")
+        volt_b = specs_b.get("voltage_rating")
+        if volt_a and volt_b and volt_a != volt_b:
+            return True, f"Electrical Safety Veto: Voltage rating conflict ({volt_a} vs {volt_b})", "REJECT"
+
+        curr_a = specs_a.get("current_rating")
+        curr_b = specs_b.get("current_rating")
+        if curr_a and curr_b and curr_a != curr_b:
+            return True, f"Electrical Safety Veto: Current rating conflict ({curr_a} vs {curr_b})", "SUBSTITUTE"
+
+        # 9. Fastener Thread Standard & Size Invariant
+        thread_a = specs_a.get("thread_size")
+        thread_b = specs_b.get("thread_size")
+        if thread_a and thread_b and thread_a != thread_b:
+            return True, f"Mechanical Fit Veto: Fastener thread size mismatch ({thread_a} vs {thread_b})", "REJECT"
+
         return False, None, None

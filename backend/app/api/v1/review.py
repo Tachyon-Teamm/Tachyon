@@ -2,7 +2,7 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_
-from app.core.database import get_db, get_sync_db
+from app.core.database import get_db, get_sync_db, get_sync_session
 from app.core.security import get_current_user, TokenData
 from app.models.models import (
     ReviewQueue, MatchCandidate, Material, CPSE, ProcurementHistory,
@@ -265,6 +265,152 @@ async def execute_review_action(
             "cluster_group_id": action.cluster_group_id,
             "decision": action.decision_type,
             "minted_cnmc": cnmc_code_str if action.decision_type in ["IDENTICAL", "SUBSTITUTE"] else None
+        }
+    finally:
+        sync_db.close()
+
+@router.post("/bulk-approve")
+def bulk_approve_clusters(
+    cluster_group_ids: List[str],
+    reviewer_notes: Optional[str] = "Bulk approved high-confidence matches",
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Fast-Track Bulk Approval for Tier 1 High Confidence (>=95%) Clusters.
+    """
+    sync_db = get_sync_session()
+    approved_clusters = []
+    try:
+        for cid in cluster_group_ids:
+            review = sync_db.query(ReviewQueue).filter(ReviewQueue.cluster_group_id == cid).first()
+            if not review or review.status == "APPROVED":
+                continue
+
+            # Fetch cluster candidates and materials
+            cands = sync_db.query(MatchCandidate).filter(MatchCandidate.cluster_group_id == cid).all()
+            mat_ids = set()
+            for c in cands:
+                mat_ids.add(c.material_a_id)
+                mat_ids.add(c.material_b_id)
+
+            mats = sync_db.query(Material).filter(Material.id.in_(mat_ids)).all() if mat_ids else []
+            if not mats:
+                continue
+
+            synth = GoldenRecordService.synthesize_iso8000_description(mats)
+            golden = GoldenRecord(
+                review_queue_id=review.id,
+                standardized_description=synth["standardized_description"],
+                item_noun=synth["item_noun"],
+                modifier=synth["modifier"],
+                nominal_size=synth["nominal_size"],
+                pressure_class=synth["pressure_class"],
+                moc=synth["moc"],
+                schedule=synth["schedule"],
+                end_connection=synth["end_connection"],
+                standard_spec=synth["standard_spec"],
+                base_uom=synth["base_uom"],
+                technical_attributes=synth.get("technical_attributes", {}),
+                canonical_attributes=synth.get("canonical_attributes", {})
+            )
+            sync_db.add(golden)
+            sync_db.flush()
+
+            cnmc_code = CNMCMinter.mint_next_cnmc(sync_db, golden.id)
+            cnmc_obj = sync_db.query(CNMCCode).filter(CNMCCode.code == cnmc_code).first()
+
+            CrosswalkService.register_mappings(sync_db, cnmc_obj.id, mats, mapping_type="IDENTICAL")
+            review.status = "APPROVED"
+            review.decision_type = "IDENTICAL"
+            review.reviewer_notes = reviewer_notes
+
+            AuditService.log_action(
+                sync_db,
+                action="BULK_REVIEW_APPROVED",
+                entity_type="CNMC_CODE",
+                entity_id=cnmc_code,
+                evidence={"cluster_group_id": cid, "material_count": len(mats)}
+            )
+            approved_clusters.append({"cluster_group_id": cid, "cnmc": cnmc_code})
+
+        sync_db.commit()
+        return {
+            "status": "SUCCESS",
+            "approved_count": len(approved_clusters),
+            "approved_clusters": approved_clusters
+        }
+    finally:
+        sync_db.close()
+
+@router.post("/dispute")
+def dispute_cluster(
+    cluster_group_id: str,
+    dispute_reason: str,
+    dissenting_cpse_code: Optional[str] = None,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Multi-CPSE Dispute & Arbitration Endpoint:
+    Transitions cluster to DISPUTED status with technical reasoning for Lead Arbiter review.
+    """
+    sync_db = get_sync_session()
+    try:
+        review = sync_db.query(ReviewQueue).filter(ReviewQueue.cluster_group_id == cluster_group_id).first()
+        if not review:
+            raise HTTPException(status_code=404, detail="Review cluster not found")
+
+        review.status = "DISPUTED"
+        review.reviewer_notes = f"[DISPUTED by {dissenting_cpse_code or 'CPSE Steward'}]: {dispute_reason}"
+
+        AuditService.log_action(
+            sync_db,
+            action="MULTI_CPSE_DISPUTE_FILED",
+            entity_type="REVIEW_QUEUE",
+            entity_id=cluster_group_id,
+            evidence={
+                "cluster_group_id": cluster_group_id,
+                "dispute_reason": dispute_reason,
+                "dissenting_cpse": dissenting_cpse_code
+            }
+        )
+        sync_db.commit()
+        return {
+            "status": "SUCCESS",
+            "cluster_group_id": cluster_group_id,
+            "lifecycle_state": "DISPUTED",
+            "assigned_to": "NATIONAL_DATA_STEWARD"
+        }
+    finally:
+        sync_db.close()
+
+@router.get("/feedback/export")
+def export_feedback_dataset():
+    """
+    Active Learning Feedback Dataset Exporter:
+    Exports reviewer decisions (Positive & Negative pairs) for model benchmarking and fine-tuning.
+    """
+    sync_db = get_sync_session()
+    try:
+        reviews = sync_db.query(ReviewQueue).filter(ReviewQueue.status.in_(["APPROVED", "REJECTED", "DISPUTED"])).all()
+        dataset = []
+        for r in reviews:
+            cands = sync_db.query(MatchCandidate).filter(MatchCandidate.cluster_group_id == r.cluster_group_id).all()
+            for c in cands:
+                dataset.append({
+                    "cluster_group_id": r.cluster_group_id,
+                    "material_a_id": c.material_a_id,
+                    "material_b_id": c.material_b_id,
+                    "composite_score": c.composite_score,
+                    "semantic_score": c.semantic_score,
+                    "attribute_score": c.attribute_score,
+                    "procurement_score": c.procurement_score,
+                    "safety_veto": c.safety_veto,
+                    "human_decision": r.decision_type or r.status,
+                    "is_positive_match": r.status == "APPROVED"
+                })
+        return {
+            "total_samples": len(dataset),
+            "samples": dataset
         }
     finally:
         sync_db.close()

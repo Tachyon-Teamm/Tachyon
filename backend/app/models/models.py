@@ -12,8 +12,11 @@ class CPSE(Base):
     __tablename__ = "cpses"
     
     id = Column(Integer, primary_key=True, index=True)
-    code = Column(String(20), unique=True, nullable=False, index=True) # CPCL, IOCL, BPCL
+    code = Column(String(50), unique=True, nullable=False, index=True) # Supports 200+ CPSEs across all sectors
     name = Column(String(100), nullable=False)
+    sector = Column(String(50), nullable=False, default="GENERAL") # OIL_AND_GAS, POWER, STEEL, MINING, CHEMICALS, HEAVY_ENG, GENERAL
+    erp_system = Column(String(50), default="SAP_S4HANA") # SAP_ECC, SAP_S4HANA, ORACLE, CUSTOM
+    is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     users = relationship("User", back_populates="cpse")
@@ -74,6 +77,30 @@ class RawMaterial(Base):
     
     batch = relationship("IngestionBatch", back_populates="raw_materials")
     material = relationship("Material", back_populates="raw_material", uselist=False)
+    normalized_material = relationship("NormalizedMaterial", back_populates="raw_material", uselist=False)
+
+class NormalizedMaterial(Base):
+    """
+    Silver Staging Layer: Cleansed, tokenized, and structured attributes 
+    with quality score before promotion to active Material or Golden Record.
+    """
+    __tablename__ = "normalized_materials"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    raw_material_id = Column(Integer, ForeignKey("raw_materials.id"), nullable=True, index=True)
+    cpse_id = Column(Integer, ForeignKey("cpses.id"), nullable=False, index=True)
+    material_code = Column(String(50), nullable=False, index=True)
+    cleaned_description = Column(String(500), nullable=False)
+    base_uom = Column(String(20), default="EA")
+    package_multiplier = Column(Float, default=1.0)
+    category_code = Column(String(50), nullable=True, index=True)
+    technical_attributes = Column(JSON, default=dict)
+    quality_score = Column(Float, default=1.0) # 0.0 to 1.0 completeness/quality score
+    status = Column(String(30), default="STAGED") # STAGED, NORMALIZED, PROMOTED, ERROR
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    cpse = relationship("CPSE")
+    raw_material = relationship("RawMaterial", back_populates="normalized_material")
 
 class TaxonomyCategory(Base):
     __tablename__ = "taxonomy_categories"
@@ -115,6 +142,8 @@ class Material(Base):
     clearance_suffix = Column(String(20), nullable=True) # e.g. C3, 2RS1
     is_kit_or_assembly = Column(Boolean, default=False)
     
+    category_code = Column(String(50), nullable=True, index=True)
+    technical_attributes = Column(JSON, default=dict)
     extracted_attributes = Column(JSON, default=dict)
     status = Column(String(30), default="ACTIVE") # ACTIVE, MERGED, SUPERSEDED
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -252,6 +281,7 @@ class GoldenRecord(Base):
     standardized_description = Column(String(500), nullable=False)
     item_noun = Column(String(100), nullable=False)
     modifier = Column(String(100), nullable=True)
+    category_code = Column(String(50), nullable=True, index=True)
     nominal_size = Column(String(50), nullable=True)
     pressure_class = Column(String(50), nullable=True)
     moc = Column(String(100), nullable=True)
@@ -260,18 +290,43 @@ class GoldenRecord(Base):
     standard_spec = Column(String(100), nullable=True)
     base_uom = Column(String(20), default="EA")
     
+    # Dynamic Schema-on-Read properties (PIM standard)
+    technical_attributes = Column(JSON, default=dict)
     canonical_attributes = Column(JSON, default=dict)
+    
+    # Temporal Versioning (SCD-2)
+    version_number = Column(Integer, default=1, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     review_queue = relationship("ReviewQueue", back_populates="golden_record")
     cnmc_code = relationship("CNMCCode", back_populates="golden_record", uselist=False)
+    versions = relationship("GoldenRecordVersion", back_populates="golden_record", cascade="all, delete-orphan")
+
+class GoldenRecordVersion(Base):
+    """
+    Immutable historical audit snapshot for point-in-time rollback and lineage tracking.
+    """
+    __tablename__ = "golden_record_versions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    golden_record_id = Column(Integer, ForeignKey("golden_records.id"), nullable=False, index=True)
+    version_number = Column(Integer, nullable=False)
+    standardized_description = Column(String(500), nullable=False)
+    technical_attributes = Column(JSON, default=dict)
+    changed_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    change_summary = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    golden_record = relationship("GoldenRecord", back_populates="versions")
+    changed_by = relationship("User")
 
 class CNMCCode(Base):
     __tablename__ = "cnmc_codes"
     
     id = Column(Integer, primary_key=True, index=True)
-    code = Column(String(50), unique=True, nullable=False, index=True) # e.g. CNMC-00001042
+    code = Column(String(50), unique=True, nullable=False, index=True) # e.g. CNMC-00001042-8
     golden_record_id = Column(Integer, ForeignKey("golden_records.id"), nullable=False, unique=True, index=True)
     is_active = Column(Boolean, default=True)
     issued_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -289,7 +344,9 @@ class Crosswalk(Base):
     cpse_id = Column(Integer, ForeignKey("cpses.id"), nullable=False, index=True)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=False, index=True)
     local_material_code = Column(String(50), nullable=False, index=True)
-    mapping_type = Column(String(30), default="IDENTICAL") # IDENTICAL, NEAR_DUPLICATE, SUBSTITUTE
+    # 7 Standardized Relationship Types (ISO 22745 / GS1 GDSN)
+    mapping_type = Column(String(50), default="IDENTICAL") 
+    # IDENTICAL, NEAR_DUPLICATE, FUNCTIONAL_EQUIVALENT, SUBSTITUTE, ALTERNATIVE_BRAND, KIT_COMPONENT, INCOMPATIBLE
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
@@ -300,6 +357,26 @@ class Crosswalk(Base):
     __table_args__ = (
         UniqueConstraint("cnmc_id", "cpse_id", "local_material_code", name="uq_cnmc_cpse_local_code"),
     )
+
+class ReviewFeedback(Base):
+    """
+    Active Learning Telemetry Store: captures (pair, features, reviewer decision, reason)
+    to auto-tune rules and export fine-tuning datasets.
+    """
+    __tablename__ = "review_feedback"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    candidate_id = Column(Integer, ForeignKey("match_candidates.id"), nullable=True, index=True)
+    material_a_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
+    material_b_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
+    feature_vector = Column(JSON, default=dict)
+    human_decision = Column(String(50), nullable=False) # APPROVED_IDENTICAL, APPROVED_SUBSTITUTE, REJECTED, SPLIT
+    reviewer_notes = Column(Text, nullable=True)
+    reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    candidate = relationship("MatchCandidate")
+    reviewer = relationship("User")
 
 class MaterialSubstitution(Base):
     __tablename__ = "material_substitutions"
