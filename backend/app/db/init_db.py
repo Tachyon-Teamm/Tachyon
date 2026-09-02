@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.database import SyncSessionLocal, sync_engine
 from app.core.security import get_password_hash
@@ -6,6 +7,12 @@ from app.db.seed_data import seed_enterprise_scenarios
 
 def init_db():
     Base.metadata.create_all(bind=sync_engine)
+    with sync_engine.connect() as conn:
+        try:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON material_embeddings USING hnsw (embedding vector_cosine_ops);"))
+            conn.commit()
+        except Exception as e:
+            print(f"[init_db] Note on index creation: {e}")
     db = SyncSessionLocal()
     try:
         # 1. Seed CPSEs
