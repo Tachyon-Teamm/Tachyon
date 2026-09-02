@@ -16,14 +16,16 @@ from app.core.config import settings
 
 router = APIRouter(prefix="/ingestion", tags=["Ingestion & Normalization"])
 
-# Known standard header patterns for CPCL, IOCL, BPCL
+from app.services.normalization.data_profiler import DataProfiler
+
+# Known standard header patterns across Oil & Gas, Power, Steel, Mining, Heavy Eng
 STANDARD_HEADER_SYNONYMS = {
-    "material_code": ["MATERIAL_NO", "MATERIAL_CODE", "MATNR", "ITEM_CODE", "CODE", "MAT_CODE", "SAP_CODE"],
-    "short_description": ["ITEM_SPEC", "DESCRIPTION", "SHORT_DESC", "MAKTX", "MATERIAL_DESC", "ITEM_DESCRIPTION", "DESC"],
-    "uom": ["UNIT_OF_MEASURE", "UOM", "MEINS", "UNIT", "BASE_UOM"],
-    "base_price": ["LAST_PO_PRICE", "PRICE", "NETPR", "UNIT_PRICE", "RATE", "LAST_PRICE"],
-    "vendor_name": ["VENDOR_NAME", "VENDOR", "NAME1", "SUPPLIER", "MANUFACTURER", "MFR"],
-    "hsn_code": ["HSN_CODE", "HSN", "SAC", "TARIFF_CODE"]
+    "material_code": ["MATERIAL_NO", "MATERIAL_CODE", "MATNR", "ITEM_CODE", "CODE", "MAT_CODE", "SAP_CODE", "PART_NO", "ITEM_NO", "MAT_NO"],
+    "short_description": ["ITEM_SPEC", "DESCRIPTION", "SHORT_DESC", "MAKTX", "MATERIAL_DESC", "ITEM_DESCRIPTION", "DESC", "SPECIFICATION", "ITEM_NAME"],
+    "uom": ["UNIT_OF_MEASURE", "UOM", "MEINS", "UNIT", "BASE_UOM", "ORDER_UNIT"],
+    "base_price": ["LAST_PO_PRICE", "PRICE", "NETPR", "UNIT_PRICE", "RATE", "LAST_PRICE", "PO_RATE", "BASIC_PRICE"],
+    "vendor_name": ["VENDOR_NAME", "VENDOR", "NAME1", "SUPPLIER", "MANUFACTURER", "MFR", "VENDOR_DESC"],
+    "hsn_code": ["HSN_CODE", "HSN", "SAC", "TARIFF_CODE", "COMMODITY_CODE"]
 }
 
 @router.post("/detect-columns", response_model=ColumnMappingDetectResponse)
@@ -33,14 +35,39 @@ async def detect_columns(
 ):
     try:
         contents = await file.read()
-        if file.filename.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(contents), nrows=10)
-        elif file.filename.endswith((".xls", ".xlsx")):
-            df = pd.read_excel(io.BytesIO(contents), nrows=10)
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file format. Please upload CSV or Excel.")
+        
+        # Smart Header Offset Auto-Detector (scans first 5 rows)
+        best_df = None
+        best_header_idx = 0
+        max_matches = -1
+
+        for header_idx in range(5):
+            try:
+                if file.filename.endswith(".csv"):
+                    temp_df = pd.read_csv(io.BytesIO(contents), header=header_idx, nrows=15)
+                elif file.filename.endswith((".xls", ".xlsx")):
+                    temp_df = pd.read_excel(io.BytesIO(contents), header=header_idx, nrows=15)
+                else:
+                    raise HTTPException(status_code=400, detail="Unsupported file format. Please upload CSV or Excel.")
+
+                cols = [str(c).strip().upper() for c in temp_df.columns if not str(c).startswith("Unnamed")]
+                # Count matches against known synonyms
+                matches = 0
+                for c in cols:
+                    for synonyms in STANDARD_HEADER_SYNONYMS.values():
+                        if any(syn in c for syn in synonyms):
+                            matches += 1
+                            break
+                if matches > max_matches:
+                    max_matches = matches
+                    best_df = temp_df
+                    best_header_idx = header_idx
+            except Exception:
+                continue
+
+        df = best_df if best_df is not None else pd.read_csv(io.BytesIO(contents), nrows=15)
             
-        columns = list(df.columns)
+        columns = [str(c) for c in df.columns]
         suggested: Dict[str, str] = {}
         confidences: Dict[str, float] = {}
 
@@ -64,34 +91,52 @@ async def detect_columns(
 
         # Generate 5-row live preview with normalization
         preview_data = []
+        raw_rows_for_profiler = []
         for idx, row in df.head(5).iterrows():
             desc_val = ""
             for c, t in suggested.items():
                 if t == "short_description":
-                    desc_val = str(row[c])
+                    desc_val = str(row[c]) if pd.notna(row[c]) else ""
                     break
             
             uom_val = "EA"
             for c, t in suggested.items():
                 if t == "uom":
-                    uom_val = str(row[c])
+                    uom_val = str(row[c]) if pd.notna(row[c]) else "EA"
+                    break
+
+            code_val = ""
+            for c, t in suggested.items():
+                if t == "material_code":
+                    code_val = str(row[c]) if pd.notna(row[c]) else ""
                     break
                     
             multiplier, base_uom = UOMNormalizer.extract_packaging_factor(desc_val, uom_val)
             specs = SpecExtractor.extract_specs(desc_val)
             
-            row_dict = row.to_dict()
+            row_dict = row.fillna("").to_dict()
             row_dict["_preview_normalized_desc"] = specs.get("raw_preprocessed")
             row_dict["_preview_uom"] = UOMNormalizer.normalize_uom(uom_val)
             row_dict["_preview_specs"] = specs
             preview_data.append(row_dict)
+            raw_rows_for_profiler.append({
+                "material_code": code_val,
+                "short_description": desc_val,
+                "uom": uom_val
+            })
+
+        # Profile Data Quality
+        quality_report = DataProfiler.profile_records(raw_rows_for_profiler)
 
         return ColumnMappingDetectResponse(
             file_name=file.filename,
             detected_columns=columns,
             suggested_mappings=suggested,
             confidence_scores=confidences,
-            preview_rows=preview_data
+            preview_rows=preview_data,
+            header_row_index=best_header_idx,
+            quality_score=quality_report.quality_score,
+            quality_report=quality_report.to_dict()
         )
 
     except Exception as e:

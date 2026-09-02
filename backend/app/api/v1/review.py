@@ -178,6 +178,16 @@ async def get_cluster_details(cluster_group_id: str, db: Session = Depends(get_d
         decision_type=review.decision_type if review else None
     )
 
+from app.models.models import (
+    ReviewQueue, MatchCandidate, Material, CPSE, ProcurementHistory,
+    GoldenRecord, CNMCCode, Crosswalk, AuditLog, ReviewFeedback
+)
+
+APPROVED_RELATIONSHIPS = {
+    "IDENTICAL", "FUNCTIONAL_EQUIVALENT", "BRAND_ALTERNATIVE", 
+    "KIT_COMPONENT", "PACKAGING_VARIANT", "SUPERSEDED", "SUBSTITUTE"
+}
+
 @router.post("/action")
 async def execute_review_action(
     action: ReviewActionRequest,
@@ -201,8 +211,28 @@ async def execute_review_action(
         if action.selected_material_ids:
             materials = [m for m in materials if m.id in action.selected_material_ids]
 
+        # Active Learning Telemetry Store: Record decision for contrastive fine-tuning
+        for c in cand_res:
+            feedback_entry = ReviewFeedback(
+                candidate_id=c.id,
+                material_a_id=c.material_a_id,
+                material_b_id=c.material_b_id,
+                feature_vector={
+                    "semantic_score": c.semantic_score,
+                    "attribute_score": c.attribute_score,
+                    "procurement_score": c.procurement_score,
+                    "composite_score": c.composite_score
+                },
+                human_decision=action.decision_type,
+                reviewer_notes=action.reviewer_notes,
+                reviewer_id=None
+            )
+            sync_db.add(feedback_entry)
+
         cnmc_code_str = None
-        if action.decision_type in ["IDENTICAL", "SUBSTITUTE"]:
+        decision_upper = action.decision_type.upper()
+
+        if decision_upper in APPROVED_RELATIONSHIPS:
             # 1. Synthesize or take custom Golden Record
             synth = GoldenRecordService.synthesize_iso8000_description(materials)
             final_desc = action.custom_golden_description or synth["standardized_description"]
@@ -228,12 +258,11 @@ async def execute_review_action(
             cnmc_code_str = CNMCMinter.mint_next_cnmc(sync_db, golden.id)
             cnmc_obj = sync_db.query(CNMCCode).filter(CNMCCode.code == cnmc_code_str).first()
 
-            # 3. Create N:1 Crosswalk links
-            mapping_type = "IDENTICAL" if action.decision_type == "IDENTICAL" else "SUBSTITUTE"
-            CrosswalkService.register_mappings(sync_db, cnmc_obj.id, materials, mapping_type=mapping_type)
+            # 3. Create N:1 Crosswalk links with exact relationship taxonomy
+            CrosswalkService.register_mappings(sync_db, cnmc_obj.id, materials, mapping_type=decision_upper)
 
             review.status = "APPROVED"
-            review.decision_type = action.decision_type
+            review.decision_type = decision_upper
             review.reviewer_notes = action.reviewer_notes
             
             # Log Audit Event
@@ -245,16 +274,17 @@ async def execute_review_action(
                 evidence={
                     "cluster_group_id": action.cluster_group_id,
                     "materials_count": len(materials),
+                    "mapping_type": decision_upper,
                     "golden_record": final_desc
                 }
             )
 
-        elif action.decision_type == "REJECT":
+        elif decision_upper == "REJECT" or decision_upper == "INCOMPATIBLE":
             review.status = "REJECTED"
-            review.decision_type = "REJECTED"
+            review.decision_type = decision_upper
             review.reviewer_notes = action.reviewer_notes
             
-        elif action.decision_type == "SPLIT":
+        elif decision_upper == "SPLIT":
             review.status = "SPLIT"
             review.decision_type = "SPLIT"
             review.reviewer_notes = action.reviewer_notes
@@ -263,8 +293,8 @@ async def execute_review_action(
         return {
             "status": "SUCCESS",
             "cluster_group_id": action.cluster_group_id,
-            "decision": action.decision_type,
-            "minted_cnmc": cnmc_code_str if action.decision_type in ["IDENTICAL", "SUBSTITUTE"] else None
+            "decision": decision_upper,
+            "minted_cnmc": cnmc_code_str if decision_upper in APPROVED_RELATIONSHIPS else None
         }
     finally:
         sync_db.close()

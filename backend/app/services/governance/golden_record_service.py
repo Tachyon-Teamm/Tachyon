@@ -79,11 +79,16 @@ class GoldenRecordService:
         if standard_spec:
             modifiers.append(standard_spec)
 
-        # Collect multi-sector modifiers
+        # Collect multi-sector modifiers (Steel, Mining, Power, Heavy Eng)
         voltage_rating = None
         current_rating = None
         thread_size = None
         length = None
+        steel_grade = None
+        alumina_content = None
+        belt_width = None
+        tensile_rating = None
+
         for m in materials:
             ext = getattr(m, "technical_attributes", None) or getattr(m, "extracted_attributes", {}) or {}
             if isinstance(ext, dict):
@@ -91,6 +96,10 @@ class GoldenRecordService:
                 current_rating = current_rating or ext.get("current_rating")
                 thread_size = thread_size or ext.get("thread_size")
                 length = length or ext.get("length")
+                steel_grade = steel_grade or ext.get("steel_grade")
+                alumina_content = alumina_content or ext.get("alumina_content")
+                belt_width = belt_width or ext.get("belt_width")
+                tensile_rating = tensile_rating or ext.get("tensile_rating")
 
         if voltage_rating:
             modifiers.append(voltage_rating)
@@ -100,6 +109,14 @@ class GoldenRecordService:
             modifiers.append(thread_size)
         if length:
             modifiers.append(length)
+        if steel_grade:
+            modifiers.append(steel_grade)
+        if alumina_content:
+            modifiers.append(alumina_content)
+        if belt_width:
+            modifiers.append(belt_width)
+        if tensile_rating:
+            modifiers.append(tensile_rating)
 
         mod_str = ", ".join(modifiers)
         standardized_desc = f"{item_noun}, {mod_str}" if mod_str else item_noun
@@ -115,7 +132,11 @@ class GoldenRecordService:
             "voltage_rating": voltage_rating,
             "current_rating": current_rating,
             "thread_size": thread_size,
-            "length": length
+            "length": length,
+            "steel_grade": steel_grade,
+            "alumina_content": alumina_content,
+            "belt_width": belt_width,
+            "tensile_rating": tensile_rating
         }
         # Filter None
         clean_canon = {k: v for k, v in canon_dict.items() if v is not None}
@@ -164,3 +185,40 @@ class GoldenRecordService:
         gr.version_number += 1
         db.flush()
         return version_entry
+
+    @staticmethod
+    def rollback_to_version(
+        db,
+        golden_record_id: int,
+        target_version_number: int,
+        rolled_back_by_user_id: Optional[int] = None
+    ) -> Optional[Any]:
+        """
+        Rolls back a Golden Record to a prior historical version snapshot with audit logging.
+        """
+        from app.models.models import GoldenRecord, GoldenRecordVersion
+
+        gr = db.query(GoldenRecord).filter(GoldenRecord.id == golden_record_id).first()
+        if not gr:
+            return None
+
+        ver = db.query(GoldenRecordVersion).filter(
+            GoldenRecordVersion.golden_record_id == golden_record_id,
+            GoldenRecordVersion.version_number == target_version_number
+        ).first()
+
+        if not ver:
+            return None
+
+        # Snapshot current state before rolling back
+        GoldenRecordService.create_version_snapshot(
+            db, golden_record_id, rolled_back_by_user_id,
+            f"Automated pre-rollback snapshot before restoring v{target_version_number}"
+        )
+
+        # Restore state
+        gr.standardized_description = ver.standardized_description
+        gr.technical_attributes = ver.technical_attributes
+        gr.canonical_attributes = ver.technical_attributes
+        db.flush()
+        return gr

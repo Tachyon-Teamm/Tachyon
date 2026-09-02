@@ -47,6 +47,9 @@ class ColumnMappingDetectResponse(BaseModel):
     suggested_mappings: Dict[str, str] # source -> target
     confidence_scores: Dict[str, float]
     preview_rows: List[Dict[str, Any]]
+    header_row_index: int = 0
+    quality_score: float = 1.0
+    quality_report: Optional[Dict[str, Any]] = None
 
 class IngestionBatchResponse(BaseModel):
     id: int
@@ -56,6 +59,7 @@ class IngestionBatchResponse(BaseModel):
     total_rows: int
     processed_rows: int
     status: str
+    quality_score: Optional[float] = 1.0
     created_at: datetime
 
     class Config:

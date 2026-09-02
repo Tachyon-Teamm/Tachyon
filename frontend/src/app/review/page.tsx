@@ -19,6 +19,7 @@ export default function ReviewQueuePage() {
   const [clusterCard, setClusterCard] = useState<any>(null);
   const [goldenDesc, setGoldenDesc] = useState<string>("");
   const [reviewerNotes, setReviewerNotes] = useState<string>("");
+  const [selectedRelationship, setSelectedRelationship] = useState<string>("IDENTICAL");
   const [selectedMaterialIds, setSelectedMaterialIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -93,10 +94,32 @@ export default function ReviewQueuePage() {
     );
   };
 
+  const handleBulkApprove = async () => {
+    const highConfIds = queueItems
+      .filter((q) => q.confidence_tier === "HIGH" && !q.safety_veto)
+      .map((q) => q.cluster_group_id);
+    if (highConfIds.length === 0) {
+      alert("No pending high-confidence (>=95%) unvetoed clusters to approve.");
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const res = await api.bulkApprove(highConfIds);
+      setActionMessage(`Successfully bulk approved ${res.approved_count} high-confidence clusters.`);
+      await loadQueue();
+    } catch (err: any) {
+      alert(`Bulk approval error: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const highConfidenceCount = queueItems.filter(q => q.confidence_tier === "HIGH" && !q.safety_veto).length;
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between glass-card p-6 rounded-2xl">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 glass-card p-6 rounded-2xl">
         <div className="space-y-0.5">
           <div className="flex items-center space-x-2.5">
             <GitMerge className="h-5 w-5 text-zinc-300" />
@@ -105,17 +128,30 @@ export default function ReviewQueuePage() {
             </h1>
           </div>
           <p className="text-xs text-zinc-400 font-normal">
-            Side-by-side 3-way multi-CPSE cluster validation. Verify safety invariants, inspect score math, and mint Golden Records.
+            Multi-CPSE cluster validation. Verify safety invariants, inspect score math, and mint National CNMC Golden Records.
           </p>
         </div>
 
-        <button
-          onClick={loadQueue}
-          className="flex items-center space-x-1.5 px-3.5 py-2 glass-input hover:bg-zinc-800 text-zinc-300 rounded-xl text-xs font-medium apple-press transition"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-          <span>Refresh Queue</span>
-        </button>
+        <div className="flex items-center space-x-2.5">
+          {highConfidenceCount > 0 && (
+            <button
+              onClick={handleBulkApprove}
+              disabled={actionLoading}
+              className="flex items-center space-x-1.5 px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 rounded-xl text-xs font-semibold apple-press transition disabled:opacity-50"
+            >
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+              <span>Bulk Approve ({highConfidenceCount}) High Conf</span>
+            </button>
+          )}
+
+          <button
+            onClick={loadQueue}
+            className="flex items-center space-x-1.5 px-3.5 py-2 glass-input hover:bg-zinc-800 text-zinc-300 rounded-xl text-xs font-medium apple-press transition"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            <span>Refresh Queue</span>
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -401,10 +437,7 @@ export default function ReviewQueuePage() {
                       if (!reason) return;
                       setActionLoading(true);
                       try {
-                        await fetch(`/api/v1/review/dispute?cluster_group_id=${encodeURIComponent(selectedClusterId)}&dispute_reason=${encodeURIComponent(reason)}`, {
-                          method: "POST",
-                          headers: { "Authorization": `Bearer ${localStorage.getItem("token") || ""}` }
-                        });
+                        await api.fileDispute(selectedClusterId, reason);
                         setActionMessage("Dispute recorded. Escalated to Lead Arbiter.");
                         await loadQueue();
                       } catch (e: any) {
@@ -421,23 +454,31 @@ export default function ReviewQueuePage() {
                   </button>
                 </div>
 
-                <div className="flex items-center space-x-3">
-                  <button
-                    onClick={() => handleAction("SUBSTITUTE")}
-                    disabled={actionLoading}
-                    className="flex items-center space-x-1.5 px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-100 border border-zinc-700 rounded-xl text-xs font-semibold apple-press transition disabled:opacity-50"
-                  >
-                    <GitMerge className="h-3.5 w-3.5" />
-                    <span>Approve as Substitute</span>
-                  </button>
+                <div className="flex items-center space-x-2.5">
+                  <div className="flex items-center space-x-1.5">
+                    <label className="text-[10px] text-zinc-400 uppercase font-semibold">Relation:</label>
+                    <select
+                      value={selectedRelationship}
+                      onChange={(e) => setSelectedRelationship(e.target.value)}
+                      className="glass-input text-zinc-200 rounded-xl px-2.5 py-1.5 text-xs font-medium focus:outline-none"
+                    >
+                      <option value="IDENTICAL">Identical Match (100% Equiv)</option>
+                      <option value="FUNCTIONAL_EQUIVALENT">Functional Equivalent</option>
+                      <option value="BRAND_ALTERNATIVE">Brand Alternative</option>
+                      <option value="KIT_COMPONENT">Kit vs Component</option>
+                      <option value="PACKAGING_VARIANT">Packaging Variant</option>
+                      <option value="SUPERSEDED">Superseded / Upgraded</option>
+                      <option value="SUBSTITUTE">Substitute Material</option>
+                    </select>
+                  </div>
 
                   <button
-                    onClick={() => handleAction("IDENTICAL")}
+                    onClick={() => handleAction(selectedRelationship)}
                     disabled={actionLoading}
                     className="flex items-center space-x-2 px-5 py-2 bg-white hover:bg-zinc-200 text-black rounded-xl text-xs font-bold shadow-sm apple-press transition disabled:opacity-50"
                   >
                     <CheckCircle2 className="h-4 w-4 text-black" />
-                    <span>Approve and Mint CNMC</span>
+                    <span>Approve & Mint CNMC</span>
                   </button>
                 </div>
               </div>

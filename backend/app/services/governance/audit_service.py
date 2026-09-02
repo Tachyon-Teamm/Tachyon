@@ -1,9 +1,16 @@
 import hashlib
 import json
 from typing import Dict, Any, Optional
-from sqlalchemy.orm import Session
-from sqlalchemy import desc
-from app.models.models import AuditLog
+try:
+    from sqlalchemy.orm import Session
+    from sqlalchemy import desc
+    from app.models.models import AuditLog
+except ImportError:
+    Session = Any  # type: ignore
+    desc = Any  # type: ignore
+    class AuditLog:  # type: ignore
+        id = 0
+        def __init__(self, **kwargs): pass
 
 class AuditService:
     """
