@@ -1,0 +1,109 @@
+version: '3.8'
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: unimm_db
+    restart: always
+    environment:
+      POSTGRES_USER: unimm
+      POSTGRES_PASSWORD: unimm_dev_password
+      POSTGRES_DB: unimm_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/scripts/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unimm -d unimm_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: unimm_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: unimm_backend
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://unimm:unimm_dev_password@db:5432/unimm_db
+      - SYNC_DATABASE_URL=postgresql://unimm:unimm_dev_password@db:5432/unimm_db
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=unimm-super-secret-jwt-key-2026-cpcl-iocl-bpcl
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=1440
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - EMBEDDING_DIMENSION=384
+      - CORS_ORIGINS=["http://localhost:3000"]
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "python -m app.db.init_db &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: unimm_worker
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://unimm:unimm_dev_password@db:5432/unimm_db
+      - SYNC_DATABASE_URL=postgresql://unimm:unimm_dev_password@db:5432/unimm_db
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=unimm-super-secret-jwt-key-2026-cpcl-iocl-bpcl
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - EMBEDDING_DIMENSION=384
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.tasks.celery_app worker --loglevel=info
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: unimm_frontend
+    restart: always
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  uploads_data:

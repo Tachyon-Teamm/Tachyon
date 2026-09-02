@@ -41,3 +41,6 @@ uploads/
 # Coverage
 htmlcov/
 .coverage
+
+# Multi-Agent Temp Directories
+.agents/
