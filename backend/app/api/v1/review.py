@@ -8,7 +8,7 @@ from app.core.database import get_db, get_sync_db, get_sync_session
 from app.core.security import get_current_user, TokenData
 from app.models.models import (
     ReviewQueue, MatchCandidate, Material, CPSE, ProcurementHistory,
-    GoldenRecord, CNMCCode, Crosswalk, AuditLog
+    GoldenRecord, CNMCCode, Crosswalk, AuditLog, ReviewFeedback
 )
 from app.schemas.schemas import (
     ClusterCardResponse, ClusterMaterialItem, ScoreBreakdown,
@@ -196,11 +196,6 @@ async def get_cluster_details(cluster_group_id: str, db: Session = Depends(get_d
         decision_type=review.decision_type if review else None
     )
 
-from app.models.models import (
-    ReviewQueue, MatchCandidate, Material, CPSE, ProcurementHistory,
-    GoldenRecord, CNMCCode, Crosswalk, AuditLog, ReviewFeedback
-)
-
 APPROVED_RELATIONSHIPS = {
     "IDENTICAL", "FUNCTIONAL_EQUIVALENT", "BRAND_ALTERNATIVE", 
     "KIT_COMPONENT", "PACKAGING_VARIANT", "SUPERSEDED", "SUBSTITUTE"
@@ -269,7 +264,9 @@ async def execute_review_action(
         if decision_upper in APPROVED_RELATIONSHIPS:
             # 1. Synthesize or take custom Golden Record
             synth = GoldenRecordService.synthesize_iso8000_description(materials)
-            final_desc = action.custom_golden_description or synth["standardized_description"]
+            final_desc = (action.custom_golden_description or "").strip() or synth["standardized_description"]
+            if len(final_desc) > 500:
+                final_desc = final_desc[:497] + "..."
             
             golden = GoldenRecord(
                 review_queue_id=review.id,
@@ -317,12 +314,26 @@ async def execute_review_action(
                 }
             )
 
-        elif decision_upper == "REJECT" or decision_upper == "INCOMPATIBLE":
+        elif decision_upper in ("REJECT", "INCOMPATIBLE"):
             review.status = "REJECTED"
             review.decision_type = decision_upper
             review.reviewer_notes = action.reviewer_notes
             review.reviewer_id = reviewer_user_id
             review.reviewed_at = datetime.now(timezone.utc)
+            
+            AuditService.log_action(
+                sync_db,
+                action="REVIEW_CLUSTER_REJECTED",
+                entity_type="REVIEW_QUEUE",
+                entity_id=action.cluster_group_id,
+                user_id=reviewer_user_id,
+                evidence={
+                    "cluster_group_id": action.cluster_group_id,
+                    "decision": decision_upper,
+                    "reviewer_notes": action.reviewer_notes,
+                    "materials_count": len(materials)
+                }
+            )
             
         elif decision_upper == "SPLIT":
             review.status = "SPLIT"
@@ -330,6 +341,21 @@ async def execute_review_action(
             review.reviewer_notes = action.reviewer_notes
             review.reviewer_id = reviewer_user_id
             review.reviewed_at = datetime.now(timezone.utc)
+
+            AuditService.log_action(
+                sync_db,
+                action="REVIEW_CLUSTER_SPLIT",
+                entity_type="REVIEW_QUEUE",
+                entity_id=action.cluster_group_id,
+                user_id=reviewer_user_id,
+                evidence={
+                    "cluster_group_id": action.cluster_group_id,
+                    "decision": "SPLIT",
+                    "reviewer_notes": action.reviewer_notes,
+                    "selected_material_ids": action.selected_material_ids,
+                    "materials_count": len(materials)
+                }
+            )
 
         sync_db.commit()
         return {
@@ -372,6 +398,14 @@ def bulk_approve_clusters(
 
             # Fetch cluster candidates and materials
             cands = sync_db.query(MatchCandidate).filter(MatchCandidate.cluster_group_id == cid).all()
+            if not cands:
+                continue
+
+            # HARD DETERMINISTIC SAFETY INVARIANT CHECK:
+            # Strictly veto and skip any cluster containing safety invariant violations
+            if any(c.safety_veto for c in cands):
+                continue
+
             mat_ids = set()
             for c in cands:
                 mat_ids.add(c.material_a_id)
@@ -413,6 +447,23 @@ def bulk_approve_clusters(
             review.reviewer_notes = effective_notes
             review.reviewer_id = reviewer_user_id
             review.reviewed_at = datetime.now(timezone.utc)
+
+            # Record ReviewFeedback for active learning telemetry
+            for c in cands:
+                sync_db.add(ReviewFeedback(
+                    candidate_id=c.id,
+                    material_a_id=c.material_a_id,
+                    material_b_id=c.material_b_id,
+                    feature_vector={
+                        "semantic_score": c.semantic_score,
+                        "attribute_score": c.attribute_score,
+                        "procurement_score": c.procurement_score,
+                        "composite_score": c.composite_score
+                    },
+                    human_decision="IDENTICAL",
+                    reviewer_notes=effective_notes,
+                    reviewer_id=reviewer_user_id
+                ))
 
             AuditService.log_action(
                 sync_db,
@@ -486,23 +537,42 @@ def export_feedback_dataset():
     """
     sync_db = get_sync_session()
     try:
-        reviews = sync_db.query(ReviewQueue).filter(ReviewQueue.status.in_(["APPROVED", "REJECTED", "DISPUTED"])).all()
+        feedbacks = sync_db.query(ReviewFeedback).order_by(ReviewFeedback.created_at.desc()).all()
         dataset = []
-        for r in reviews:
-            cands = sync_db.query(MatchCandidate).filter(MatchCandidate.cluster_group_id == r.cluster_group_id).all()
-            for c in cands:
+        if feedbacks:
+            for fb in feedbacks:
+                feat = fb.feature_vector or {}
                 dataset.append({
-                    "cluster_group_id": r.cluster_group_id,
-                    "material_a_id": c.material_a_id,
-                    "material_b_id": c.material_b_id,
-                    "composite_score": c.composite_score,
-                    "semantic_score": c.semantic_score,
-                    "attribute_score": c.attribute_score,
-                    "procurement_score": c.procurement_score,
-                    "safety_veto": c.safety_veto,
-                    "human_decision": r.decision_type or r.status,
-                    "is_positive_match": r.status == "APPROVED"
+                    "feedback_id": fb.id,
+                    "candidate_id": fb.candidate_id,
+                    "material_a_id": fb.material_a_id,
+                    "material_b_id": fb.material_b_id,
+                    "composite_score": feat.get("composite_score", 0.0),
+                    "semantic_score": feat.get("semantic_score", 0.0),
+                    "attribute_score": feat.get("attribute_score", 0.0),
+                    "procurement_score": feat.get("procurement_score", 0.0),
+                    "human_decision": fb.human_decision,
+                    "is_positive_match": fb.human_decision in APPROVED_RELATIONSHIPS,
+                    "reviewer_notes": fb.reviewer_notes,
+                    "created_at": fb.created_at.isoformat() if fb.created_at else None
                 })
+        else:
+            reviews = sync_db.query(ReviewQueue).filter(ReviewQueue.status.in_(["APPROVED", "REJECTED", "DISPUTED"])).all()
+            for r in reviews:
+                cands = sync_db.query(MatchCandidate).filter(MatchCandidate.cluster_group_id == r.cluster_group_id).all()
+                for c in cands:
+                    dataset.append({
+                        "cluster_group_id": r.cluster_group_id,
+                        "material_a_id": c.material_a_id,
+                        "material_b_id": c.material_b_id,
+                        "composite_score": c.composite_score,
+                        "semantic_score": c.semantic_score,
+                        "attribute_score": c.attribute_score,
+                        "procurement_score": c.procurement_score,
+                        "safety_veto": c.safety_veto,
+                        "human_decision": r.decision_type or r.status,
+                        "is_positive_match": r.status == "APPROVED"
+                    })
         return {
             "total_samples": len(dataset),
             "samples": dataset

@@ -46,11 +46,14 @@ class SafetyGuardrails:
         Evaluates two parsed specifications for hard safety conflicts.
         Returns: (is_vetoed: bool, veto_reason: Optional[str], suggested_route: Optional[str])
         """
-        # 1. Item Noun Invariant
-        noun_a = specs_a.get("item_noun")
-        noun_b = specs_b.get("item_noun")
-        if noun_a and noun_b and str(noun_a).strip().upper() != str(noun_b).strip().upper():
-            return True, f"Fundamental item type mismatch: '{noun_a}' vs '{noun_b}'", "REJECT"
+        # 1. Item Noun Invariant (Hierarchical Subtype Aware)
+        noun_a = str(specs_a.get("item_noun") or "").strip().upper()
+        noun_b = str(specs_b.get("item_noun") or "").strip().upper()
+        if noun_a and noun_b and noun_a != noun_b:
+            # Check if one is a specialization/subtype of the other (e.g. "VALVE, GATE" and "VALVE")
+            is_subtype = (noun_a in noun_b) or (noun_b in noun_a)
+            if not is_subtype:
+                return True, f"Fundamental item type mismatch: '{noun_a}' vs '{noun_b}'", "REJECT"
 
         # 2. Safety-Critical Pressure Class Mismatch
         press_a = specs_a.get("pressure_class")

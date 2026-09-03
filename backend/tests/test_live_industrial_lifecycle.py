@@ -67,7 +67,8 @@ def test_complete_industrial_lifecycle_end_to_end():
             material_id=mat_a.id,
             cpse_id=cpcl.id,
             po_number="PO-CPCL-001",
-            vendor_name=VendorNormalizer.normalize_vendor("L&T Valves Ltd"),
+            vendor_name="L&T Valves Ltd",
+            vendor_normalized=VendorNormalizer.normalize_vendor("L&T Valves Ltd"),
             unit_price=12500.0,
             quantity=10.0,
             currency="INR"
@@ -102,7 +103,8 @@ def test_complete_industrial_lifecycle_end_to_end():
             material_id=mat_b.id,
             cpse_id=iocl.id,
             po_number="PO-IOCL-002",
-            vendor_name=VendorNormalizer.normalize_vendor("Larsen & Toubro"),
+            vendor_name="Larsen & Toubro",
+            vendor_normalized=VendorNormalizer.normalize_vendor("Larsen & Toubro"),
             unit_price=11800.0,
             quantity=15.0,
             currency="INR"

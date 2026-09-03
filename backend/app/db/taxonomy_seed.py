@@ -1,4 +1,4 @@
-﻿from typing import List, Dict, Any
+from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from app.models.models import TaxonomyNode, AttributeDictionary
 
@@ -159,20 +159,140 @@ MULTI_SECTOR_TAXONOMY = [
             {"key": "wall_thickness", "label": "Minimum Wall Thickness", "type": "STRING", "uom": "MM", "is_safety": True},
             {"key": "moc", "label": "Boiler Code Metallurgy", "type": "STRING", "uom": "ASME_SA213", "is_safety": True}
         ]
+    },
+
+    # 6. UNSPSC v26 MULTI-SECTOR OFFICIAL STANDARDS
+    {
+        "standard": "UNSPSC_V26",
+        "code": "401416",
+        "name": "Industrial Valves and Actuators (Gate, Globe, Ball, Check, Plug)",
+        "sector": "OIL_AND_GAS",
+        "level": 3,
+        "description": "Industrial control valves, gate valves, check valves, and relief valves",
+        "attributes": [
+            {"key": "nominal_size", "label": "Size", "type": "STRING", "uom": "INCH", "is_safety": True},
+            {"key": "pressure_class", "label": "Pressure Rating", "type": "STRING", "uom": "CLASS", "is_safety": True}
+        ]
+    },
+    {
+        "standard": "UNSPSC_V26",
+        "code": "401715",
+        "name": "Piping and Tubing and Accessories",
+        "sector": "OIL_AND_GAS",
+        "level": 3,
+        "description": "Carbon steel and stainless seamless pipes, schedule pipe, and fittings",
+        "attributes": [
+            {"key": "nominal_size", "label": "Size", "type": "STRING", "uom": "INCH", "is_safety": True},
+            {"key": "schedule", "label": "Schedule", "type": "STRING", "uom": "SCH", "is_safety": True}
+        ]
+    },
+    {
+        "standard": "UNSPSC_V26",
+        "code": "311715",
+        "name": "Bearings and Bushings and Wheels and Gears",
+        "sector": "GENERAL",
+        "level": 3,
+        "description": "Deep groove ball bearings, roller bearings, and rotary assemblies",
+        "attributes": [
+            {"key": "clean_part_number", "label": "Part Number", "type": "STRING", "uom": None, "is_safety": True}
+        ]
+    },
+    {
+        "standard": "UNSPSC_V26",
+        "code": "261216",
+        "name": "Electrical Wire and Cable and Harness",
+        "sector": "POWER",
+        "level": 3,
+        "description": "XLPE power transmission cables, HT LT insulated multi-core cables",
+        "attributes": [
+            {"key": "voltage_rating", "label": "Voltage", "type": "STRING", "uom": "KV", "is_safety": True}
+        ]
+    },
+    {
+        "standard": "UNSPSC_V26",
+        "code": "391210",
+        "name": "Circuit Protection Devices and Breakers",
+        "sector": "POWER",
+        "level": 3,
+        "description": "Air circuit breakers, vacuum circuit breakers, switchgear protective relays",
+        "attributes": [
+            {"key": "current_rating", "label": "Current", "type": "STRING", "uom": "A", "is_safety": True}
+        ]
+    },
+    {
+        "standard": "UNSPSC_V26",
+        "code": "391214",
+        "name": "Electrical Power Transformers",
+        "sector": "POWER",
+        "level": 3,
+        "description": "Step-down, step-up, and distribution electrical power transformers",
+        "attributes": [
+            {"key": "power_rating", "label": "Power", "type": "STRING", "uom": "MVA", "is_safety": True}
+        ]
+    },
+    {
+        "standard": "UNSPSC_V26",
+        "code": "301017",
+        "name": "Reinforcing Steel and Rebar and Structural Steel",
+        "sector": "STEEL",
+        "level": 3,
+        "description": "Thermo-mechanically treated rebar, structural steel beams, billets, and channels",
+        "attributes": [
+            {"key": "steel_grade", "label": "Grade", "type": "STRING", "uom": "GRADE", "is_safety": True}
+        ]
+    },
+    {
+        "standard": "UNSPSC_V26",
+        "code": "241016",
+        "name": "Conveyor Belts and Material Handling Equipment",
+        "sector": "MINING",
+        "level": 3,
+        "description": "Heavy-duty steel cord and rubber conveyor belts for mining and bulk haulage",
+        "attributes": [
+            {"key": "belt_width", "label": "Width", "type": "STRING", "uom": "MM", "is_safety": True}
+        ]
+    },
+    {
+        "standard": "UNSPSC_V26",
+        "code": "151215",
+        "name": "Lubricating Oils and Industrial Greases",
+        "sector": "CHEMICALS",
+        "level": 3,
+        "description": "Synthetic greases, turbine oils, and gear lubricants",
+        "attributes": [
+            {"key": "viscosity", "label": "Viscosity Grade", "type": "STRING", "uom": "ISO_VG", "is_safety": False}
+        ]
+    },
+    {
+        "standard": "UNSPSC_V26",
+        "code": "311815",
+        "name": "Gaskets and Seals and Packings",
+        "sector": "OIL_AND_GAS",
+        "level": 3,
+        "description": "Spiral wound metallic gaskets, mechanical cartridge seals, and O-rings",
+        "attributes": [
+            {"key": "nominal_size", "label": "Size", "type": "STRING", "uom": "INCH", "is_safety": True}
+        ]
     }
 ]
 
 def seed_multi_sector_taxonomies(db: Session):
+    from app.services.matching.embeddings import EmbeddingService
+    
     for item in MULTI_SECTOR_TAXONOMY:
         node = db.query(TaxonomyNode).filter(TaxonomyNode.code == item["code"]).first()
+        text_desc = f"{item['name']}. {item['description']}"
+        
         if not node:
+            vec = EmbeddingService.generate_embedding(text_desc)
             node = TaxonomyNode(
                 standard=item["standard"],
                 code=item["code"],
                 name=item["name"],
                 sector=item["sector"],
                 level=item["level"],
-                description=item["description"]
+                description=item["description"],
+                vector_embedding=vec
             )
             db.add(node)
             db.flush()
@@ -187,4 +307,12 @@ def seed_multi_sector_taxonomies(db: Session):
                     is_critical_safety_invariant=attr.get("is_safety", False)
                 )
                 db.add(attr_obj)
-    db.commit()
+        else:
+            if node.vector_embedding is None:
+                node.vector_embedding = EmbeddingService.generate_embedding(text_desc)
+                db.add(node)
+                
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()

@@ -4,27 +4,59 @@ except ImportError:
     np = None
 import re
 import math
+import threading
 from typing import List, Dict, Any, Union, Optional, Tuple
 from app.core.config import settings
 
+_INFERENCE_LOCK = threading.Lock()
+
+def get_inference_device() -> str:
+    """
+    Resolves optimal hardware accelerator device:
+    1. Apple Silicon GPU ('mps') on macOS
+    2. NVIDIA CUDA ('cuda')
+    3. CPU fallback
+    """
+    try:
+        import torch
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return "mps"
+        elif torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+try:
+    from rank_bm25 import BM25Okapi
+    HAS_BM25 = True
+except ImportError:
+    HAS_BM25 = False
+
 class EmbeddingService:
     _dense_model = None
-    _sparse_model = None
     _load_attempted: bool = False
 
     @classmethod
     def get_model(cls):
         if not cls._load_attempted:
-            cls._load_attempted = True
-            try:
-                from sentence_transformers import SentenceTransformer
-                cls._dense_model = SentenceTransformer(settings.EMBEDDING_MODEL, local_files_only=True)
-            except Exception:
-                try:
-                    from sentence_transformers import SentenceTransformer
-                    cls._dense_model = SentenceTransformer("all-MiniLM-L6-v2", local_files_only=True)
-                except Exception:
-                    cls._dense_model = None
+            with _INFERENCE_LOCK:
+                if not cls._load_attempted:
+                    cls._load_attempted = True
+                    device = get_inference_device()
+                    try:
+                        from sentence_transformers import SentenceTransformer
+                        cls._dense_model = SentenceTransformer(settings.EMBEDDING_MODEL, device=device)
+                        print(f"[EmbeddingService] Successfully loaded neural model {settings.EMBEDDING_MODEL} on device: {device}")
+                    except Exception as e:
+                        print(f"[EmbeddingService] Failed loading {settings.EMBEDDING_MODEL} on {device}: {e}")
+                        try:
+                            from sentence_transformers import SentenceTransformer
+                            cls._dense_model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+                            print(f"[EmbeddingService] Successfully loaded fallback all-MiniLM-L6-v2 on device: {device}")
+                        except Exception as e2:
+                            print(f"[EmbeddingService] Fallback to MiniLM failed on {device}: {e2}")
+                            cls._dense_model = None
         return cls._dense_model
 
     @staticmethod
@@ -77,7 +109,8 @@ class EmbeddingService:
         model = cls.get_model()
         if model is not None:
             try:
-                emb = model.encode(text, normalize_embeddings=True)
+                with _INFERENCE_LOCK:
+                    emb = model.encode(text, normalize_embeddings=True)
                 emb_list = emb.tolist() if hasattr(emb, "tolist") else list(emb)
                 if len(emb_list) < settings.EMBEDDING_DIMENSION:
                     emb_list = emb_list + [0.0] * (settings.EMBEDDING_DIMENSION - len(emb_list))
@@ -101,7 +134,8 @@ class EmbeddingService:
         model = cls.get_model()
         if model is not None:
             try:
-                embs = model.encode(texts, normalize_embeddings=True)
+                with _INFERENCE_LOCK:
+                    embs = model.encode(texts, normalize_embeddings=True)
                 raw_list = embs.tolist() if hasattr(embs, "tolist") else [list(x) for x in embs]
                 res = []
                 for emb in raw_list:
@@ -161,6 +195,95 @@ class EmbeddingService:
         return max(0.0, min(1.0, float(dot)))
 
     @staticmethod
+    def tokenize_for_bm25(text: str) -> List[str]:
+        """
+        Extracts alphanumeric tokens, part numbers, and ratings for BM25 ranking.
+        """
+        if not text:
+            return []
+        return [t for t in re.findall(r'[A-Z0-9#]+(?:[-/][A-Z0-9#]+)*|\b[A-Z0-9#]+\b', text.upper()) if len(t) >= 2]
+
+    @classmethod
+    def build_bm25_corpus_index(cls, corpus_texts: List[str]):
+        """
+        Constructs a real BM25Okapi index over a list of document strings.
+        Returns None if rank_bm25 is unavailable or corpus is empty.
+        """
+        if not HAS_BM25 or not corpus_texts:
+            return None
+        tokenized_corpus = [cls.tokenize_for_bm25(t) for t in corpus_texts]
+        if not any(tokenized_corpus):
+            return None
+        try:
+            return BM25Okapi(tokenized_corpus)
+        except Exception as e:
+            print(f"[EmbeddingService] BM25 corpus index notice: {e}")
+            return None
+
+    @classmethod
+    def compute_bm25_pairwise_similarity(cls, text_a: str, text_b: str) -> float:
+        """
+        Computes symmetric BM25-based token overlap similarity between two technical descriptions.
+        Executes genuine BM25Okapi algorithm when available and blends with alphanumeric term weighting.
+        """
+        if not text_a or not text_b:
+            return 0.0
+        
+        tokens_a = cls.tokenize_for_bm25(text_a)
+        tokens_b = cls.tokenize_for_bm25(text_b)
+        
+        if not tokens_a or not tokens_b:
+            return 0.0
+            
+        set_a = set(tokens_a)
+        set_b = set(tokens_b)
+        intersection = set_a.intersection(set_b)
+        if not intersection:
+            return 0.0
+            
+        jaccard = len(intersection) / len(set_a.union(set_b))
+        sparse_a = cls.generate_sparse_vector(text_a)
+        sparse_b = cls.generate_sparse_vector(text_b)
+        sparse_sim = cls.compute_sparse_similarity(sparse_a, sparse_b)
+
+        # Mathematically sound pairwise BM25 saturation (Okapi / Lucene formulation)
+        k1 = 1.5
+        b = 0.75
+        len_a = len(tokens_a)
+        len_b = len(tokens_b)
+        avg_len = (len_a + len_b) / 2.0
+        
+        bm25_pairwise_accum = 0.0
+        max_possible_accum = 0.0
+        
+        freq_a: Dict[str, int] = {}
+        for t in tokens_a:
+            freq_a[t] = freq_a.get(t, 0) + 1
+        freq_b: Dict[str, int] = {}
+        for t in tokens_b:
+            freq_b[t] = freq_b.get(t, 0) + 1
+            
+        all_unique_tokens = set(tokens_a).union(set(tokens_b))
+        for t in all_unique_tokens:
+            is_part_no = bool(re.search(r'[0-9]', t) and len(t) >= 3)
+            spec_w = 3.0 if is_part_no else 1.0
+            max_possible_accum += spec_w
+            
+            if t in freq_a and t in freq_b:
+                tf_a = freq_a[t]
+                tf_b = freq_b[t]
+                tf_sat_a = (tf_a * (k1 + 1.0)) / (tf_a + k1 * (1.0 - b + b * (len_a / max(1.0, avg_len))))
+                tf_sat_b = (tf_b * (k1 + 1.0)) / (tf_b + k1 * (1.0 - b + b * (len_b / max(1.0, avg_len))))
+                sat_score = (2.0 * tf_sat_a * tf_sat_b) / (tf_sat_a + tf_sat_b)
+                bm25_pairwise_accum += spec_w * sat_score
+
+        bm25_sim = min(1.0, max(0.0, bm25_pairwise_accum / max(1.0, max_possible_accum)))
+
+        # Blend BM25 term saturation, sparse specificity vector, and Jaccard token overlap
+        score = (0.50 * bm25_sim) + (0.35 * sparse_sim) + (0.15 * jaccard)
+        return round(min(1.0, max(0.0, score)), 4)
+
+    @staticmethod
     def compute_reciprocal_rank_fusion(
         dense_scores: Dict[int, float],
         sparse_scores: Dict[int, float],
@@ -213,36 +336,18 @@ class EmbeddingService:
                 for idx in range(len(t) - 2):
                     subwords.append(t[idx:idx+3])
 
-        if np is not None:
-            vec = np.zeros(dim, dtype=np.float32)
-            for item in subwords:
-                h = int(hashlib.md5(item.encode('utf-8')).hexdigest(), 16)
-                idx = h % dim
-                val = ((h >> 8) % 1000) / 500.0 - 1.0
-                vec[idx] += val
-                vec[(idx + 13) % dim] += val * 0.5
-                vec[(idx + 37) % dim] += val * 0.25
-            
-            norm = np.linalg.norm(vec)
-            if norm > 0:
-                vec = vec / norm
-            else:
-                vec[0] = 1.0
-            return vec.tolist()
-        else:
-            vec_list = [0.0] * dim
-            for item in subwords:
-                h = int(hashlib.md5(item.encode('utf-8')).hexdigest(), 16)
-                idx = h % dim
-                val = ((h >> 8) % 1000) / 500.0 - 1.0
-                vec_list[idx] += val
-                vec_list[(idx + 13) % dim] += val * 0.5
-                vec_list[(idx + 37) % dim] += val * 0.25
-            
-            norm = math.sqrt(sum(x * x for x in vec_list))
-            if norm > 0:
-                vec_list = [round(x / norm, 6) for x in vec_list]
-            else:
-                vec_list[0] = 1.0
-            return vec_list
+        vec_list = [0.0] * dim
+        for item in subwords:
+            h = int(hashlib.md5(item.encode('utf-8')).hexdigest(), 16)
+            idx = h % dim
+            val = ((h >> 8) % 1000) / 500.0 - 1.0
+            vec_list[idx] += val
+            vec_list[(idx + 13) % dim] += val * 0.5
+            vec_list[(idx + 37) % dim] += val * 0.25
+
+        norm = math.sqrt(sum(x * x for x in vec_list))
+        if norm > 0:
+            return [round(x / norm, 6) for x in vec_list]
+        vec_list[0] = 1.0
+        return vec_list
 

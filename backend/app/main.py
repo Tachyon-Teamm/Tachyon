@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="Enterprise National Unified Material Master Framework for CPCL, IOCL, and BPCL (Zero-Training Neuro-Symbolic Architecture)",
+    description="Enterprise National Unified Material Master Framework (Zero-Training Neuro-Symbolic Multi-CPSE Architecture)",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc"

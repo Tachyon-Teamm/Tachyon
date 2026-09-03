@@ -127,8 +127,22 @@ class GoldenRecordService:
         if tensile_rating:
             modifiers.append(tensile_rating)
 
-        mod_str = ", ".join(modifiers)
-        standardized_desc = f"{item_noun}, {mod_str}" if mod_str else item_noun
+        # Collect any additional dynamic attributes from technical_attributes
+        for m in materials:
+            ext = getattr(m, "technical_attributes", None) or {}
+            if isinstance(ext, dict):
+                for k, v in ext.items():
+                    if v and str(v).strip() and not k.startswith("_") and k not in ("item_noun", "raw_preprocessed"):
+                        clean_v = f"{k.replace('_', ' ').upper()}: {str(v).strip().upper()}"
+                        if clean_v not in modifiers and str(v).strip().upper() not in modifiers:
+                            modifiers.append(clean_v)
+
+        if modifiers:
+            standardized_desc = f"{item_noun}, {', '.join(modifiers[:8])}"
+            mod_str = ", ".join(modifiers)
+        else:
+            standardized_desc = item_noun
+            mod_str = ""
 
         canon_dict = {
             "item_noun": item_noun,

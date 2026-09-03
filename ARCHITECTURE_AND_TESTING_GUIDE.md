@@ -29,51 +29,55 @@ In India's public sector, different Central Public Sector Enterprises (CPSEs) su
 
 ```mermaid
 flowchart TD
-    subgraph UI ["Layer 1: Frontend Web Application (Next.js 15 + Tailwind)"]
-        UI_Ingest["/ingestion (File Upload & Column Mapping)"]
-        UI_Review["/review (3-Way Cluster Governance & Dispute)"]
-        UI_Crosswalk["/crosswalk (Spotlight Search & SAP Export)"]
-        UI_Catalog["/materials (Master Catalog Search)"]
+    subgraph UI ["Layer 1: Frontend Web Application (Next.js 14 + Tailwind)"]
+        UI_Ingest["/ingestion (File Upload, Dynamic Preview & Batch History)"]
+        UI_Review["/review (7-Relationship Queue, 4 Status Tabs & Dispute Modal)"]
+        UI_Crosswalk["/crosswalk (National Registry, Spotlight Search, GeM & SAP Export)"]
+        UI_Catalog["/materials (8 CPSEs Catalog, Golden Record Toggle & Detail Modal)"]
     end
 
     subgraph API ["Layer 2: API Gateway (FastAPI)"]
-        API_Ingest["/api/v1/ingestion"]
-        API_Match["/api/v1/matching"]
-        API_Rev["/api/v1/review"]
-        API_Cross["/api/v1/crosswalk"]
-        API_Integ["/api/v1/integration (SAP / GeM)"]
+        API_Ingest["/api/v1/ingestion (Streaming & Batch Profiler)"]
+        API_Match["/api/v1/matching (Incremental & Batch Engine)"]
+        API_Rev["/api/v1/review (7 Relationships, Disputes & Feedback Telemetry)"]
+        API_Cross["/api/v1/crosswalk (Registry & Reverse Lookup)"]
+        API_Audit["/api/v1/audit (CERT-In Hash Chain & Verify-Chain)"]
+        API_Integ["/api/v1/integration (SAP MATMAS05 & GeM Catalog)"]
     end
 
     subgraph WORKERS ["Layer 3: Processing & Background Workers"]
-        CELERY["Celery Workers / Sync Processors"]
-        LEXICON["DomainLexicon (Hinglish & Industry Standards)"]
-        SPEC_EXT["SpecExtractor (Parametric Regex Engine)"]
-        UOM_NORM["UOMNormalizer (UN/CEFACT + Multipliers)"]
-        EMBED["EmbeddingService (all-MiniLM-L6-v2)"]
+        CELERY["Celery Workers / ThreadPool Fallback"]
+        LEXICON["DomainLexicon (Multi-Sector Standards & Hinglish)"]
+        SPEC_EXT["SpecExtractor (Parametric Engineering Parser)"]
+        UOM_NORM["UOMNormalizer (UN/CEFACT Base Multipliers)"]
+        EMBED["EmbeddingService (BAAI/bge-base-en-v1.5 + MiniLM + Cross-Encoder + BM25)"]
     end
 
     subgraph MATCH_CORE ["Layer 4: Zero-Training Matching & Safety Guardrails"]
-        BLOCK["Level-1 Category / Noun Blocking"]
-        GUARD["SafetyGuardrails (Hard Invariant Safety Vetoes)"]
-        SCORER["CompositeScorer (0.40 Sem + 0.35 Attr + 0.25 Proc)"]
-        CLUSTER["ClusterEngine (DSU with Edge Density Gate >= 0.60)"]
+        BLOCK["Level-1 Category / Noun Blocking Engine"]
+        GUARD["SafetyGuardrails (10 Deterministic Invariant Vetoes)"]
+        SCORER["CompositeScorer (0.40 Sem + 0.35 Attr + 0.25 Proc Dynamic Rebalancing)"]
+        CLUSTER["ClusterEngine (DSU Correlation Graph with Density Gate >= 0.60)"]
     end
 
     subgraph GOV ["Layer 5: Governance & National Authority"]
-        ISO["GoldenRecordService (ISO 8000 Noun-Modifier)"]
-        MINTER["CNMCMinter (Verhoeff Checksum CNMC-XXXXXXXX-C)"]
-        CROSSWALK["CrosswalkService (N:1 Crosswalk Hub)"]
-        AUDIT["AuditService (HMAC-SHA256 Chained Audit Trail)"]
+        ISO["GoldenRecordService (ISO 8000 Noun-Modifier Standardization)"]
+        MINTER["CNMCMinter (Verhoeff D5 Checksum CNMC-XXXXXXXX-C)"]
+        CROSSWALK["CrosswalkService (N:1 National Crosswalk Registry)"]
+        FEEDBACK["ReviewFeedback (Active Learning Triplet Telemetry)"]
+        AUDIT["AuditService (CERT-In HMAC-SHA256 Chained Audit Trail)"]
     end
 
-    subgraph STORAGE ["Layer 6: Persistence & Caching"]
-        PG[(PostgreSQL 16 + pgvector)]
+    subgraph STORAGE ["Layer 6: Persistence & Acceleration"]
+        PG[(PostgreSQL 16 + pgvector HNSW)]
         REDIS[(Redis 7 Broker & Cache)]
+        DEVICE["Hardware Accelerator (Apple Silicon MPS / NVIDIA CUDA / CPU)"]
     end
 
     UI --> API
     API --> WORKERS
     WORKERS --> STORAGE
+    WORKERS --> DEVICE
     API --> MATCH_CORE
     MATCH_CORE --> STORAGE
     API --> GOV
@@ -270,9 +274,10 @@ curl -s "http://localhost:8000/api/v1/review/queue?status_filter=PENDING" | jq .
 ```
 *Expected Output:* Returns a list of pending cluster objects with `cluster_group_id`, `composite_score`, and `confidence_tier`.
 
-#### 6. Mint National Code (Approve Cluster)
+#### 6. Mint National Code or Record 7-Relationship Action
 ```bash
-# Replace CLUSTER_ID with an ID returned from the previous queue command
+# Supports all 7 relationships: IDENTICAL, FUNCTIONAL_EQUIVALENT, BRAND_ALTERNATIVE,
+# KIT_COMPONENT, PACKAGING_VARIANT, SUPERSEDED, SUBSTITUTE (+ REJECT, SPLIT)
 curl -s -X POST "http://localhost:8000/api/v1/review/action" \
   -H "Content-Type: application/json" \
   -d '{
@@ -283,7 +288,29 @@ curl -s -X POST "http://localhost:8000/api/v1/review/action" \
 ```
 *Expected Output:* Returns `"status": "SUCCESS"` and `"minted_cnmc": "CNMC-00000001-7"`.
 
-#### 7. Test Reverse Code Lookup in Crosswalk Hub
+#### 7. Verify CERT-In Cryptographic Audit Hash Chain
+```bash
+curl -s "http://localhost:8000/api/v1/audit/verify-chain" | jq .
+```
+*Expected Output:*
+```json
+{
+  "is_valid": true,
+  "total_entries_verified": 75,
+  "status": "VERIFIED",
+  "genesis_hash": "...",
+  "latest_hash": "...",
+  "tampered_entry_id": null
+}
+```
+
+#### 8. Export Active Learning Telemetry Dataset
+```bash
+curl -s "http://localhost:8000/api/v1/review/feedback/export" | jq .
+```
+*Expected Output:* Returns exported labeled training pairs from `ReviewFeedback` table with feature vectors (`semantic_score`, `attribute_score`, `procurement_score`, `reviewer_decision`).
+
+#### 9. Test Reverse Code Lookup in Crosswalk Hub
 ```bash
 curl -s "http://localhost:8000/api/v1/crosswalk/lookup?local_code=889102" | jq .
 ```
@@ -292,7 +319,7 @@ curl -s "http://localhost:8000/api/v1/crosswalk/lookup?local_code=889102" | jq .
 - `golden_description`: `VALVE, GATE, 6 INCH (150 MM), CLASS 300#...`
 - `sister_mappings`: CPCL `100234` and BPCL `445511`.
 
-#### 8. Test SAP S/4HANA Export
+#### 10. Test SAP S/4HANA Export
 ```bash
 curl -s "http://localhost:8000/api/v1/export/sap-lsmw-csv" | head -n 5
 ```
@@ -303,15 +330,15 @@ curl -s "http://localhost:8000/api/v1/export/sap-lsmw-csv" | head -n 5
 ### Level 4: Interactive UI Walkthrough (5-Minute Visual Smoke Test)
 
 1. **Ingestion Page (`http://localhost:3000/ingestion`)**:
-   - Select **IOCL** from dropdown.
-   - Click **"Load Sample"** (or choose a CSV file).
+   - Select **IOCL** (or any of the 8 CPSEs) from the dropdown.
+   - Click **"Load Sample"** (dynamically loaded via `api.getSamples()`).
    - Verify: The system auto-detects `MATERIAL_NO`, `ITEM_SPEC`, etc.
-   - Look at the **Live Normalization Preview** table: verify that dimensions are converted (e.g. `150MM` $\rightarrow$ `6 INCH (150 MM)`).
-   - Click **"Confirm & Start Batch"**: verify batch completion badge.
+   - Inspect the **Live Normalization Preview** table: verify dimension standardization (e.g. `150MM` $\rightarrow$ `6 INCH (150 MM)`).
+   - Click **"Confirm & Start Batch"**: verify batch completion badge and the **Batch History Audit Table** displaying row counts, quality score badge (e.g., `0.92`), and the **"Proceed to Review Queue"** action button.
 
 2. **Governance Review Queue (`http://localhost:3000/review`)**:
-   - Verify cluster cards appear on the left column.
-   - Click a cluster: the right pane displays the **3-Way Multi-CPSE Card** (CPCL vs IOCL vs BPCL).
+   - Filter clusters using the 4 status tabs: **PENDING**, **DISPUTED**, **APPROVED**, **REJECTED**.
+   - Click a cluster card: the right pane displays the **Multi-CPSE Comparison Card**.
    - Check the **Score Breakdown**:
      - Semantic Score ($S_{\text{sem}}$)
      - Attribute Overlap ($S_{\text{attr}}$)
@@ -319,21 +346,21 @@ curl -s "http://localhost:8000/api/v1/export/sap-lsmw-csv" | head -n 5
    - Inspect the **Safety Badge**:
      - Commodity items display `Passed Invariants`.
      - Trap items (e.g. 4" Pipe SCH 40 vs SCH 80) display `Safety Veto: Wall Thickness Schedule Mismatch`.
-   - Click **"Approve as Identical"**:
-     - Observe notification confirming code minting (e.g., `Successfully minted CNMC-00000001-7`).
+   - Take action: Choose any of the **7 Approved Relationships** (`IDENTICAL`, `FUNCTIONAL_EQUIVALENT`, etc.).
+   - Raise a dispute: Click **"Raise Dispute"** to launch the in-app arbitration dialog, specify the dissenting CPSE, and escalate directly to the National Data Steward.
 
 3. **National Crosswalk Registry (`http://localhost:3000/crosswalk`)**:
-   - Type any local ERP code into the search box:
-     - e.g. `100234` (CPCL) or `889102` (IOCL) or `445511` (BPCL).
-   - Press Enter / Search:
-     - It instantly resolves the **National CNMC Authority** card.
-     - It displays sister links in other refineries.
-   - Click **"Export SAP LSMW CSV"**:
-     - Browser downloads the ERP migration CSV.
+   - Master Crosswalk Registry table loads automatically on mount via `api.getCrosswalkRegistry()`.
+   - Perform spotlight search by typing any CPSE local code (e.g. `100234` or `889102`):
+     - Displays the authoritative **CNMC National Authority** card and cross-enterprise sister mappings.
+   - Click **"Syndicate to GeM"**: triggers catalog packaging and returns compliance signature feedback.
+   - Click **"Export SAP IDoc"**: triggers MATMAS05 payload generation.
+   - Click **"Verify Audit Chain"**: runs live cryptographic verification against the database hash chain.
 
 4. **Master Materials Catalog (`http://localhost:3000/materials`)**:
-   - Type keywords like `valve`, `bearing`, `gasket`, or `pipe`.
-   - Verify that extracted engineering attributes (MOC, Size, Pressure, UOM) are displayed in structured badges.
+   - Switch between **"CPSE Local Records"** and **"National Golden (CNMC)"** views.
+   - Filter by any of the **8 CPSEs** (`CPCL`, `IOCL`, `BPCL`, `NTPC`, `SAIL`, `ONGC`, `COALINDIA`, `BHEL`).
+   - Click on any row to open the **Technical Details Slideover Modal**, displaying raw fields alongside deterministic extracted attributes (nominal size, pressure class, metallurgy, standard specs).
 
 ---
 
@@ -341,12 +368,29 @@ curl -s "http://localhost:8000/api/v1/export/sap-lsmw-csv" | head -n 5
 
 | Checkpoint | What "Working Correctly" Looks Like | What "Failure" Looks Like & How to Fix |
 |---|---|---|
-| **Python Test Suite** | All tests pass with green `PASSED`. | `ModuleNotFoundError`: Run `pip install -r requirements.txt` or activate virtual environment. |
+| **Python Test Suite** | All 102 pytest tests + 22 unittests pass with green `PASSED`. | `ModuleNotFoundError`: Run with `PYTHONPATH=backend` or activate `.venv`. |
 | **Backend API** | `http://localhost:8000/docs` renders OpenAPI interactive docs. | Connection Refused: Backend server is not running (`uvicorn app.main:app --reload`). |
 | **Database & pgvector** | `SELECT 1;` succeeds and `\dx` in psql lists extension `vector`. | Missing extension: Run `CREATE EXTENSION IF NOT EXISTS vector;` in PostgreSQL. |
 | **Safety Guardrail Check** | 4" Pipe SCH 40 vs SCH 80 is rejected from identical merge. | If merged identically: Ensure `SafetyGuardrails.evaluate_pair()` was executed before scoring. |
 | **CNMC Checksum** | Code ends with a valid Verhoeff digit: `CNMC-00000001-7`. | If plain sequential without checksum: Check `CNMCMinter.mint_next_cnmc()`. |
-| **Audit Security** | `audit_logs` entries contain non-null `signature` and `prev_signature`. | If null: Check `AuditService.log_action()` cryptographic chain. |
+| **Audit Hash Security** | `GET /api/v1/audit/verify-chain` returns `is_valid: true` and `status: VERIFIED`. | If invalid: Check `AuditService.verify_chain()` or inspect `tampered_entry_id`. |
+
+---
+
+## 6. The 8 Real-World Stress-Testing Scenarios & Invariant Verification
+
+These 8 real-world engineering scenarios serve as the core benchmark for UniMM's zero-training neuro-symbolic engine and safety invariants. They are directly verified by [`backend/tests/test_e2e_scenarios.py`](file:///Users/rupesh/Documents/Arc-1/backend/tests/test_e2e_scenarios.py).
+
+| # | Real-World Scenario | Real CPSE Input Examples | Zero-Training Engineered Behavior | Guardrail / Rule Mechanism | Verification Test |
+|---|---|---|---|---|---|
+| **1** | **Commodity Spec Variation** | CPCL: `VLV GATE 6IN 300# CS FLG`<br/>IOCL: `VALVE, GATE, 150MM, CL300, WCB`<br/>BPCL: `6 INCH GATE VALVE FLANGED 300#` | ✅ **Resolved**: UOM normalizer converts to `EA`; Regex extracts `6" = 150mm`, `300# = CL300`, `CS = WCB`. | Deterministic unit conversion + Regex spec extraction (`SpecExtractor`). | `test_scenario_1_commodity_spec_variation` |
+| **2** | **Safety-Critical Minor Variations (False Positive Trap)** | CPCL: `PIPE CS 4" SCH 40 A106`<br/>IOCL: `PIPE CS 4" SCH 80 A106`<br/>CPCL: `VALVE 2" 150#` vs IOCL: `VALVE 2" 300#` | 🛡️ **Protected**: Pre-trained embeddings yield high similarity, but **Hard Invariant Veto** blocks merging different pressure classes or wall thicknesses. | Boolean mismatch on `extracted_attributes['pressure_class']` or `['schedule']`. | `test_scenario_2_safety_critical_variations` |
+| **3** | **OEM Part No. Punctuation & Clearance Suffixes** | CPCL: `BEARING 6205-2RS1 SKF`<br/>IOCL: `SKF BEARING NO. 6205 2RS1 / C3`<br/>BPCL: `BRG SKF 6205-2RS1` | ⚙️ **Part Number Canonicalizer**: Strips punctuation noise (`62052RS1`) and isolates `C3` clearance suffix via regex to route as Near-Duplicate / Substitute. | String normalization + Regex clearance suffix splitter (`/C3`, `-2RS`, `-ZZ`). | `test_scenario_3_bearing_part_no_clearance` |
+| **4** | **Vendor / Mfr Name Discrepancies** | CPCL: `L&T VALVES LTD`<br/>IOCL: `LARSEN & TOUBRO LTD - VALVE DIV`<br/>BPCL: `AUDCO INDIA / L&T` | 🏢 **Petroleum Vendor Alias Map**: Normalizes vendor variations to parent corporate entity (`LARSEN & TOUBRO`) via dictionary lookup + RapidFuzz string comparison. | Built-in CPSE approved vendor dictionary (`VendorNormalizer`) + RapidFuzz Token Set Ratio. | `test_scenario_4_vendor_alias_normalization` |
+| **5** | **Assemblies / Kits vs Component Spares** | CPCL: `MECH SEAL CARTRIDGE PUMP P-101A (SET)`<br/>IOCL: `ROTARY SEAL RING FOR PUMP P-101A` | 🛑 **Assembly Token Veto**: Regex detects `SET/KIT/ASSY` vs `RING/SPARE/PART` and blocks identical merge. | Keyword rule list (`SET`, `KIT`, `ASSY`, `COMPLETE` vs `SPARE`, `RING`, `IMPELLER`). | `test_scenario_5_assembly_vs_spare_part` |
+| **6** | **Packaging UOM vs Base UOM Discrepancy** | CPCL: `GREASE MOBILITH SHC 100 - 18KG BUCKET`<br/>IOCL: `GREASE MOBILITH SHC 100` (Unit: KG)<br/>BPCL: `MOBILITH SHC 100 - 180KG DRUM` | ⚖️ **Packaging Factor Normalizer**: Regex extracts numeric multipliers (`18 KG`, `180 KG`), converts to `Base UOM: KG`, and computes true ₹/KG unit price and total weight. | Regex pattern `(\d+(?:\.\d+)?)\s*(KG\|LTR\|GM\|ML)\s*(BUCKET\|DRUM\|CAN\|BKT\|DRM)` in `UOMNormalizer`. | `test_scenario_6_packaging_multiplier_consolidation` |
+| **7** | **Indian Plant Colloquial Terms (Hinglish)** | IOCL: `4" SPIRAL GASKET JAALI WALA`<br/>CPCL: `GASKET SPIRAL WOUND 4" CS/SS` | 📖 **Domain Lexicon**: Built-in Oil & Gas synonym dictionary maps `jaali wala` $\rightarrow$ `spiral wound / mesh`, `churi` $\rightarrow$ `threaded`. | Static dictionary replacement table before tokenization (`DomainLexicon`). | `test_scenario_7_hinglish_colloquial_refinery_terms` |
+| **8** | **Legacy Obsolete Standards** | CPCL: `FLANGE 6" 300# ANSI B16.5`<br/>IOCL: `FLANGE 6" 300# ASME B16.5` | 📜 **Standards Synonym Map**: Recognizes ANSI B16.5 and ASME B16.5 as historical standard equivalents. | Static engineering standard equivalence mapping table. | `test_scenario_8_standards_equivalence` |
 
 ---
 
@@ -358,3 +402,4 @@ curl -s "http://localhost:8000/api/v1/export/sap-lsmw-csv" | head -n 5
 - **Governance & Authority Minting:** [`backend/app/services/governance/`](file:///Users/rupesh/Documents/Arc-1/backend/app/services/governance/)
 - **Frontend Pages:** [`frontend/src/app/`](file:///Users/rupesh/Documents/Arc-1/frontend/src/app/)
 - **Automated Test Suite:** [`backend/tests/`](file:///Users/rupesh/Documents/Arc-1/backend/tests/)
+

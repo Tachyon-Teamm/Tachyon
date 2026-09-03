@@ -53,6 +53,7 @@ class IngestionBatch(Base):
     total_rows = Column(Integer, default=0)
     processed_rows = Column(Integer, default=0)
     status = Column(String(30), default="PENDING") # PENDING, PROCESSING, COMPLETED, FAILED
+    quality_score = Column(Float, default=1.0)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=utc_now)
     
@@ -133,6 +134,7 @@ class TaxonomyNode(Base):
     level = Column(Integer, default=1)
     parent_id = Column(Integer, ForeignKey("taxonomy_nodes.id"), nullable=True)
     description = Column(Text, nullable=True)
+    vector_embedding = Column(Vector(settings.EMBEDDING_DIMENSION), nullable=True)
     created_at = Column(DateTime, default=utc_now)
     
     parent = relationship("TaxonomyNode", remote_side=[id])
@@ -186,6 +188,8 @@ class Material(Base):
     is_kit_or_assembly = Column(Boolean, default=False)
     
     category_code = Column(String(50), nullable=True, index=True)
+    category_confidence = Column(Float, default=1.0)
+    predicted_category_name = Column(String(200), nullable=True)
     technical_attributes = Column(JSON, default=dict)
     extracted_attributes = Column(JSON, default=dict)
     status = Column(String(30), default="ACTIVE") # ACTIVE, MERGED, SUPERSEDED

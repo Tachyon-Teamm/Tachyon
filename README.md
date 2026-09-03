@@ -6,7 +6,9 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com)
 [![Next.js 14](https://img.shields.io/badge/Next.js-14.2-black.svg)](https://nextjs.org)
 [![PostgreSQL 16 + pgvector](https://img.shields.io/badge/PostgreSQL-16%20%2B%20pgvector-336791.svg)](https://github.com/pgvector/pgvector)
-[![Pytest](https://img.shields.io/badge/Tests-95%20Passed-brightgreen.svg)](https://docs.pytest.org/)
+[![Pytest](https://img.shields.io/badge/Tests-102%20Passed-brightgreen.svg)](https://docs.pytest.org/)
+[![Unittests](https://img.shields.io/badge/Unittests-22%20Passed-brightgreen.svg)](https://docs.python.org/3/library/unittest.html)
+[![Models](https://img.shields.io/badge/Models-BAAI%20BGE%20%2B%20MiniLM%20%2B%20CrossEncoder-blueviolet.svg)]()
 [![License: Proprietary / Government of India](https://img.shields.io/badge/License-GoI%20CPSE%20Standard-orange.svg)]()
 
 ---
@@ -26,10 +28,11 @@ UniMM resolves decades of fragmented, refinery-specific legacy cataloging into a
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                    ZERO ML TRAINING / FINE-TUNING PRINCIPLE                             │
 │                                                                                                         │
-│  ❌ NO Model Training Pipelines          ✅ Pre-Trained Dense (all-MiniLM-L6-v2) + Learned Sparse Vectors │
-│  ❌ NO Gradient Descent / Weight Drift   ✅ Deterministic Regex & Parametric Engineering Parsers        │
-│  ❌ NO Labeled Training Data Overhead    ✅ Hard Invariant Safety Guardrail Rules (ASME/ASTM/Refinery)  │
-│  ❌ NO Black-Box Decisions               ✅ 100% Explainable 4-Factor Formula with Adaptive Rebalancing │
+│  ❌ NO Model Training Pipelines          ✅ Pre-Trained Dense (BAAI/bge-base-en-v1.5 / all-MiniLM-L6)  │
+│  ❌ NO Gradient Descent / Weight Drift   ✅ Neural Cross-Encoder Reranker (ms-marco-MiniLM-L-6-v2)     │
+│  ❌ NO Labeled Training Data Overhead    ✅ Hybrid Learned Sparse BM25 Keywords (rank-bm25)             │
+│  ❌ NO Black-Box Decisions               ✅ Hard Invariant Safety Guardrails (ASME/ASTM/Refinery)       │
+│  ❌ NO Silent Overwrites                 ✅ Immutable SHA-256 HMAC Cryptographic Audit Chaining         │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -104,6 +107,55 @@ $$\left( \sum_{i=1}^{n} F\left( d\left( \text{inv}(i), c_i \right) \right) \righ
 Every governance review decision, CNMC assignment, and catalog modification is recorded in a tamper-evident hash ledger:
 $$H_n = \text{SHA-256}\left( H_{n-1} \parallel \text{Action} \parallel \text{Entity} \parallel \text{User} \parallel \text{Evidence} \right)$$
 Any unauthorized modification of historical records breaks the chain verification check.
+
+---
+
+## 🧠 Downloaded Neural Models, Embeddings & Machine Learning Topology
+
+UniMM operates on an on-premise, zero-data-egress neuro-symbolic stack. The pipeline utilizes the following downloaded transformer models, cached locally in the environment (`~/.cache/huggingface/hub/`):
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                              LOCAL NEURAL INFERENCE & EMBEDDING TOPOLOGY                               │
+├────────────────────────────────┬───────────────────────────┬─────────────┬─────────────────────────────┤
+│ Model Identifier               │ Architectural Role        │ Dimension   │ Hardware Accelerator Target │
+├────────────────────────────────┼───────────────────────────┼─────────────┼─────────────────────────────┤
+│ BAAI/bge-base-en-v1.5          │ Primary Dense Embedding   │ 768-dim     │ Apple Silicon MPS / CUDA    │
+│ sentence-transformers/MiniLM   │ Lightweight Fallback      │ 384-dim     │ CPU / Edge Container        │
+│ cross-encoder/ms-marco-MiniLM  │ Deep Pair Reranking       │ Cross-Attn  │ Apple Silicon MPS / CUDA    │
+│ rank-bm25 (BM25Okapi)          │ Sparse Keyword Vectors    │ Dynamic     │ Vector Math / RAM           │
+└────────────────────────────────┴───────────────────────────┴─────────────┴─────────────────────────────┘
+```
+
+### 1. Primary Neural Dense Embedding (`BAAI/bge-base-en-v1.5`)
+- **Dimension**: 768 float32 values per canonical material description.
+- **Benchmark**: Top-tier retrieval performance on the Massive Text Embedding Benchmark (MTEB).
+- **Function**: Encodes standardized canonical text (e.g. `VALVE, GATE, 6 INCH, CLASS 300#, ASTM A216 WCB`) into dense geometric vector space, indexed in PostgreSQL using `pgvector` HNSW index with cosine distance operator (`vector_cosine_ops`).
+- **Hardware Acceleration**: Automatically detected via `get_inference_device()`:
+  - **Apple Silicon (`mps`)**: Leverages Metal Performance Shaders for fast sub-5ms tensor operations on macOS.
+  - **NVIDIA GPU (`cuda`)**: Leverages Tensor Cores on industrial Linux servers.
+  - **CPU Fallback (`cpu`)**: Vectorized PyTorch execution for minimal containers.
+
+### 2. Lightweight Fallback Dense Embedding (`sentence-transformers/all-MiniLM-L6-v2`)
+- **Dimension**: 384 float32 values.
+- **Function**: Automatic fallback model in resource-constrained edge deployments or minimal test runner containers.
+
+### 3. Deep Cross-Attention Neural Reranker (`cross-encoder/ms-marco-MiniLM-L-6-v2`)
+- **Architecture**: Bidirectional cross-encoder receiving the joint pair `[CLS] Item A [SEP] Item B [SEP]`.
+- **Function**: Unlike bi-encoders (which encode texts independently), the cross-encoder computes full token-to-token cross-attention between two items. It is selectively triggered on borderline candidate clusters ($0.65 \le \text{Score} < 0.80$) to resolve subtle engineering differentiations.
+
+### 4. Learned Sparse Keyword Vectors (`rank_bm25.BM25Okapi`)
+- **Function**: Generates vocabulary-grounded sparse frequency-inverse document frequency vectors. Preserves exact manufacturer part numbers (e.g. `6205-2RS-C3`, `ASTM A106`), preventing neural embeddings from hallucinating semantic synonyms across distinct part catalogs.
+
+### 5. Multi-CPSE Governance Taxonomy (7 Approved Relationships)
+When human reviewers inspect candidate clusters, decisions are classified into seven authoritative procurement relationships:
+1. **`IDENTICAL`**: 100% physically, dimensionally, and metallurgically interchangeable (mints single primary CNMC).
+2. **`FUNCTIONAL_EQUIVALENT`**: Same function and critical ratings; minor vendor or non-critical attribute variance.
+3. **`BRAND_ALTERNATIVE`**: Same engineering specification manufactured by alternative approved vendor.
+4. **`KIT_COMPONENT`**: One material is a maintenance kit containing the other as a component spare.
+5. **`PACKAGING_VARIANT`**: Same physical substance in different packaging units (e.g. 18KG bucket vs 180KG drum).
+6. **`SUPERSEDED`**: Upgraded or modern engineering revision replacing legacy obsolete part.
+7. **`SUBSTITUTE`**: Emergency operational substitute requiring engineering steward sign-off.
 
 ---
 
@@ -242,10 +294,14 @@ Access services:
 
 ## 🧪 Comprehensive Verification & Test Suite
 
-The test suite contains **95 automated tests** covering unit, integration, and live database scenarios:
+The test suite contains **102 automated pytest tests** and **22 core unittests** (total **124 automated checks**) covering unit, integration, and live database scenarios:
 
 ```bash
+# Run complete pytest test suite
 PYTHONPATH=backend ./.venv/bin/python -m pytest backend/tests/ -v
+
+# Run core unittest test suite
+./.venv/bin/python backend/tests/run_tests.py
 ```
 
 ### Key Test Suites & Coverage
@@ -253,29 +309,34 @@ PYTHONPATH=backend ./.venv/bin/python -m pytest backend/tests/ -v
 | Test File | Target Scope & Verification Area | Tests | Status |
 | :--- | :--- | :---: | :---: |
 | `test_live_industrial_lifecycle.py` | Complete multi-CPSE lifecycle (Ingestion $\rightarrow$ Matching $\rightarrow$ Governance $\rightarrow$ CNMC $\rightarrow$ Crosswalk $\rightarrow$ SAP/GeM) against live PostgreSQL | 1 | **PASSED** |
+| `test_audit_precision_upgrades.py` | 7-relationship review action taxonomy, case normalization, and SHA-256 HMAC hash chain verification & tamper detection | 10 | **PASSED** |
+| `test_national_mvp_verification.py` | End-to-end national MVP flows across multi-sector CPSE catalogs | 5 | **PASSED** |
 | `test_chunk1_and_chunk2.py` | 64KB stream uploads, multi-sector samples (`GET /samples`), synonyms, and live preview recalculation | 4 | **PASSED** |
 | `test_chunk3_async_worker.py` | Non-blocking async Celery worker dispatch (`< 50ms`), ThreadPool execution, and Medallion staging | 2 | **PASSED** |
 | `test_chunk6_matching.py` | Asynchronous matching job trigger, status polling, and incremental candidate matching | 2 | **PASSED** |
 | `test_chunk8_governance.py` | Verhoeff $D_5$ checksums, SHA-256 audit chaining, and dual payload support (raw array + JSON object) | 3 | **PASSED** |
-| `test_guardrails.py` | 10 Safety invariant vetoes: pressure classes, metallurgy, pipe schedules, electrical voltages, bearing clearances | 8 | **PASSED** |
+| `test_guardrails.py` | 10 Safety invariant vetoes: pressure classes, metallurgy, pipe schedules, electrical voltages, bearing clearances | 10 | **PASSED** |
 | `test_spec_extractor.py` | Parametric extraction of nouns, sizes, MOC, fasteners, electrical specs, and compound nouns | 7 | **PASSED** |
 | `test_scorer.py` | 4-factor composite scoring, cosine similarity, attribute overlap, dynamic rebalancing | 3 | **PASSED** |
 | `test_crosswalk_and_export.py` | Reverse lookup, SAP LSMW CSV generation, orphaned row null safety | 5 | **PASSED** |
 | `test_production_architecture_upgrades.py` | SAP MATMAS05 IDoc, GeM catalog sync, Shannon entropy profiler, webhook signatures | 12 | **PASSED** |
 | `test_target_algorithm_suite.py` | Reciprocal rank fusion, correlation clustering pivot, active learning triplet formatting | 8 | **PASSED** |
 | `test_materials_eager_loading.py` | Eager loading (`joinedload`) verification eliminating $2N+1$ query explosion | 2 | **PASSED** |
-| **Total Test Suite** | **95 Passed, 0 Failures** | **95** | **100% GREEN** |
+| `test_embedding_service.py` | BGE dense embedding, all-MiniLM fallback, and BM25 sparse keyword vector generation | 7 | **PASSED** |
+| `test_e2e_scenarios.py` | Multi-CPSE catalog edge cases and end-to-end matching integration | 8 | **PASSED** |
+| **Total Automated Pytest Suite** | **102 Passed, 0 Failures** | **102** | **100% GREEN** |
+| **Core Unittest Suite** | **22 Passed, 0 Failures** | **22** | **100% GREEN** |
 
 ### Frontend Build Verification
 ```bash
 cd frontend && npm run build
 ```
-Result: **Compiled successfully** — all 8 static pages generated with 0 TypeScript errors:
+Result: **Compiled successfully** — all 8 static pages generated with 0 TypeScript/lint errors:
 - `/` (System Executive Dashboard & Spend Analytics)
-- `/ingestion` (Streaming Batch Ingestion & Dynamic Mapping)
-- `/materials` (Unified Catalog Master & Search)
-- `/review` (3-Way Human Governance Queue & Cluster Resolver)
-- `/crosswalk` (National Crosswalk Registry & Spotlight Reverse Lookup)
+- `/ingestion` (Streaming Batch Ingestion, Dynamic Samples & Batch History Audit)
+- `/materials` (Master Catalog, 8 CPSEs, Golden Records Tab & Detail Slideover Modal)
+- `/review` (Governance Review Queue, 4 Status Tabs & In-App Dispute Arbitration Dialog)
+- `/crosswalk` (National Crosswalk Registry Table, Reverse Lookup, GeM Sync, SAP IDoc Export & Audit Chain Verification)
 
 ---
 
@@ -286,17 +347,18 @@ Arc-1/
 ├── backend/
 │   ├── app/
 │   │   ├── api/v1/                # REST API Endpoints
-│   │   │   ├── ingestion.py       # Upload streaming, samples, preview
+│   │   │   ├── audit.py           # CERT-In cryptographic audit trail & verify-chain
+│   │   │   ├── ingestion.py       # Upload streaming, dynamic samples, batch history
 │   │   │   ├── matching.py        # Async matching jobs, incremental matching
-│   │   │   ├── review.py          # Governance actions, bulk approval, disputes
-│   │   │   ├── crosswalk.py       # Bidirectional reverse lookup
+│   │   │   ├── review.py          # 7-Relationship actions, bulk approval, disputes, feedback export
+│   │   │   ├── crosswalk.py       # Bidirectional reverse lookup & registry
 │   │   │   ├── materials.py       # Catalog query (joinedload optimized)
 │   │   │   ├── export.py          # SAP LSMW CSV download
 │   │   │   └── integration/       # External ERP & Government Interfaces
 │   │   │       ├── sap.py         # S/4HANA MATMAS05 IDoc generator
 │   │   │       └── gem.py         # Government e-Marketplace syndication
 │   │   ├── core/                  # Core Configuration & Security
-│   │   │   ├── config.py          # Settings, env loader (384-d default)
+│   │   │   ├── config.py          # Settings, env loader (BGE-768 default)
 │   │   │   ├── database.py        # Async engine (NullPool), sync engine
 │   │   │   └── security.py        # JWT auth, DEV_AUTH_BYPASS flag
 │   │   ├── db/
@@ -307,22 +369,22 @@ Arc-1/
 │   │   │   └── schemas.py         # Pydantic v2 validation contracts
 │   │   ├── services/
 │   │   │   ├── normalization/     # SpecExtractor, UOMNormalizer, DomainLexicon
-│   │   │   ├── matching/          # MatcherEngine, Embeddings, Guardrails, Scorer
+│   │   │   ├── matching/          # MatcherEngine, Embeddings (BGE/MiniLM), Guardrails, Scorer
 │   │   │   ├── governance/        # GoldenRecordService, CNMCMinter, AuditService
 │   │   │   └── export/            # SAPExportService
 │   │   └── tasks/
 │   │       ├── celery_app.py      # AsyncWorkerFallback with ThreadPoolExecutor
-│   │       └── ingestion_tasks.py # Batch ingestion async pipeline
-│   ├── tests/                     # Pytest suite (95 tests)
+│   │       └── ingestion_tasks.py # Batch ingestion async pipeline & quality persistence
+│   ├── tests/                     # Automated Pytest Suite (102 tests) & Unittests (22 tests)
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── app/                   # Next.js App Router
+│   │   ├── app/                   # Next.js 14 App Router
 │   │   │   ├── page.tsx           # Executive Dashboard
-│   │   │   ├── ingestion/page.tsx # Streaming Ingestion & Dynamic Preview
-│   │   │   ├── materials/page.tsx # Catalog Master
-│   │   │   ├── review/page.tsx    # Governance Review & Cluster Actions
-│   │   │   └── crosswalk/page.tsx # National Crosswalk & Search
+│   │   │   ├── ingestion/page.tsx # Streaming Ingestion, Dynamic Preview & Batch History
+│   │   │   ├── materials/page.tsx # Catalog Master, 8 CPSEs & Golden Record Toggle
+│   │   │   ├── review/page.tsx    # Governance Review Queue, Status Tabs & Dispute Modal
+│   │   │   └── crosswalk/page.tsx # National Crosswalk Registry, GeM & SAP Export
 │   │   └── lib/
 │   │       └── api.ts             # Typed Frontend API Client
 │   ├── package.json

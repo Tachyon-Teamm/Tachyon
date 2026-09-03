@@ -137,7 +137,8 @@ def test_pure_data_flow_chunk1_to_chunk9_complete():
         # Check Chunk 5 Vector Embedding
         emb_cpcl = db.query(MaterialEmbedding).filter(MaterialEmbedding.material_id == gold_cpcl.id).first()
         assert emb_cpcl is not None
-        assert len(emb_cpcl.embedding) == 384
+        from app.core.config import settings
+        assert len(emb_cpcl.embedding) == settings.EMBEDDING_DIMENSION
 
         # Ingest IOCL sister material for matching
         csv_iocl = (

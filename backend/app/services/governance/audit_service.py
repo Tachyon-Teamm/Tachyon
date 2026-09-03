@@ -57,3 +57,70 @@ class AuditService:
         db.add(log_entry)
         db.flush()
         return log_entry
+
+    @staticmethod
+    def verify_chain(db: Session) -> Dict[str, Any]:
+        """
+        Traverses the immutable audit log from genesis (id ascending)
+        and cryptographically verifies every SHA-256 HMAC entry hash and chain link.
+        Detects unauthorized database edits, deletions, or insertions.
+        """
+        from sqlalchemy import asc
+        entries = db.query(AuditLog).order_by(asc(AuditLog.id)).all()
+        if not entries:
+            return {
+                "is_valid": True,
+                "total_entries_verified": 0,
+                "status": "EMPTY",
+                "genesis_hash": None,
+                "latest_hash": None,
+                "tampered_entry_id": None
+            }
+
+        prev_hash = "GENESIS"
+        for i, entry in enumerate(entries):
+            evidence = dict(entry.evidence or {})
+            stored_prev_hash = evidence.pop("_prev_hash", None)
+            stored_hash = evidence.pop("_hash", None)
+
+            # Check 1: Chain Linkage
+            if stored_prev_hash != prev_hash:
+                return {
+                    "is_valid": False,
+                    "total_entries_verified": i,
+                    "status": "CHAIN_BROKEN",
+                    "tampered_entry_id": entry.id,
+                    "error": f"Linkage mismatch at log ID {entry.id}: expected prev_hash '{prev_hash}', got '{stored_prev_hash}'"
+                }
+
+            # Check 2: Entry Content Integrity Hash
+            recomputed_hash = AuditService._compute_entry_hash(
+                prev_hash=prev_hash,
+                action=entry.action,
+                entity_type=entry.entity_type,
+                entity_id=entry.entity_id,
+                user_id=entry.user_id,
+                evidence=evidence
+            )
+            if stored_hash != recomputed_hash:
+                return {
+                    "is_valid": False,
+                    "total_entries_verified": i,
+                    "status": "CONTENT_TAMPERED",
+                    "tampered_entry_id": entry.id,
+                    "error": f"Hash mismatch at log ID {entry.id}: expected '{recomputed_hash}', got '{stored_hash}'"
+                }
+
+            prev_hash = stored_hash
+
+        genesis_hash = entries[0].evidence.get("_hash") if entries[0].evidence else None
+        latest_hash = entries[-1].evidence.get("_hash") if entries[-1].evidence else None
+
+        return {
+            "is_valid": True,
+            "total_entries_verified": len(entries),
+            "status": "VERIFIED",
+            "genesis_hash": genesis_hash,
+            "latest_hash": latest_hash,
+            "tampered_entry_id": None
+        }

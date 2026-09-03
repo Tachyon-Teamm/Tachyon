@@ -15,7 +15,7 @@ from app.services.governance.golden_record_service import GoldenRecordService
 class TestAllEightCPCLIOCLBPCLScenarios(unittest.TestCase):
     """
     Direct verification of all 8 Real-World Stress-Testing Scenarios
-    specified in Section 5 of pln-01.md.
+    specified in Section 6 of ARCHITECTURE_AND_TESTING_GUIDE.md.
     """
 
     def test_scenario_1_commodity_spec_variation(self):

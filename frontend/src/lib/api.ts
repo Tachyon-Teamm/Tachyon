@@ -83,6 +83,7 @@ export const api = {
     if (params.limit) q.append("limit", params.limit.toString());
     return fetchApi<any[]>(`/materials?${q.toString()}`);
   },
+  getMaterialDetail: (materialId: number) => fetchApi<any>(`/materials/${materialId}`),
 
   // Matching Engine & Review Queue
   triggerMatching: () => fetchApi<any>("/matching/trigger", { method: "POST" }),
@@ -123,4 +124,27 @@ export const api = {
     return fetchApi<any>(`/crosswalk/lookup?${q.toString()}`);
   },
   getCrosswalkRegistry: () => fetchApi<any[]>("/crosswalk/registry"),
+
+  // Enterprise Integrations (SAP & GeM)
+  syncGeMCatalog: (cnmcCodes?: string[]) =>
+    fetchApi<any>("/integration/gem/catalog-sync", {
+      method: "POST",
+      body: JSON.stringify(cnmcCodes || []),
+    }),
+  exportSapIDoc: (cnmcCodes?: string[]) =>
+    fetchApi<any>("/integration/sap/idoc-export", {
+      method: "POST",
+      body: JSON.stringify(cnmcCodes || []),
+    }),
+
+  // Cryptographic Audit & Lineage
+  getAuditLogs: (params: { limit?: number; offset?: number; action?: string; entity_type?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.limit) q.append("limit", params.limit.toString());
+    if (params.offset) q.append("offset", params.offset.toString());
+    if (params.action) q.append("action", params.action);
+    if (params.entity_type) q.append("entity_type", params.entity_type);
+    return fetchApi<any[]>(`/audit/logs?${q.toString()}`);
+  },
+  verifyAuditChain: () => fetchApi<any>("/audit/verify-chain"),
 };

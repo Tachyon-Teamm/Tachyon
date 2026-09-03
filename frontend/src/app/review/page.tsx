@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 export default function ReviewQueuePage() {
+  const [statusFilter, setStatusFilter] = useState<string>("PENDING");
   const [queueItems, setQueueItems] = useState<any[]>([]);
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
   const [clusterCard, setClusterCard] = useState<any>(null);
@@ -24,14 +25,20 @@ export default function ReviewQueuePage() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [disputeModalOpen, setDisputeModalOpen] = useState(false);
+  const [disputeReason, setDisputeReason] = useState("");
+  const [disputeCpse, setDisputeCpse] = useState("IOCL");
 
   const loadQueue = async () => {
     setLoading(true);
     try {
-      const items = await api.getReviewQueue("PENDING");
+      const items = await api.getReviewQueue(statusFilter);
       setQueueItems(items);
-      if (items.length > 0 && !selectedClusterId) {
+      if (items.length > 0) {
         setSelectedClusterId(items[0].cluster_group_id);
+      } else {
+        setSelectedClusterId(null);
+        setClusterCard(null);
       }
     } catch (err) {
       console.error(err);
@@ -42,7 +49,7 @@ export default function ReviewQueuePage() {
 
   useEffect(() => {
     loadQueue();
-  }, []);
+  }, [statusFilter]);
 
   useEffect(() => {
     if (selectedClusterId) {
@@ -157,9 +164,26 @@ export default function ReviewQueuePage() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Left Column: Cluster List */}
         <div className="glass-card rounded-2xl p-4 space-y-3 h-[740px] overflow-y-auto">
-          <div className="flex items-center justify-between pb-3 border-b border-white/[0.08]">
+          {/* Status Tabs */}
+          <div className="grid grid-cols-4 gap-1 p-1 bg-zinc-950 rounded-xl border border-white/[0.06] text-[10px] font-bold">
+            {(["PENDING", "DISPUTED", "APPROVED", "REJECTED"] as const).map((st) => (
+              <button
+                key={st}
+                onClick={() => setStatusFilter(st)}
+                className={`py-1.5 rounded-lg transition text-center ${
+                  statusFilter === st
+                    ? "bg-zinc-800 text-white shadow"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {st === "PENDING" ? "Queue" : st.charAt(0) + st.slice(1).toLowerCase()}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
             <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
-              Pending Clusters ({queueItems.length})
+              {statusFilter} Clusters ({queueItems.length})
             </span>
           </div>
 
@@ -431,21 +455,7 @@ export default function ReviewQueuePage() {
                     <span>Split Cluster</span>
                   </button>
                   <button
-                    onClick={async () => {
-                      if (!selectedClusterId) return;
-                      const reason = window.prompt("Enter technical reason for CPSE dispute arbitration:");
-                      if (!reason) return;
-                      setActionLoading(true);
-                      try {
-                        await api.fileDispute(selectedClusterId, reason);
-                        setActionMessage("Dispute recorded. Escalated to Lead Arbiter.");
-                        await loadQueue();
-                      } catch (e: any) {
-                        alert(`Dispute notice: ${e.message}`);
-                      } finally {
-                        setActionLoading(false);
-                      }
-                    }}
+                    onClick={() => setDisputeModalOpen(true)}
                     disabled={actionLoading}
                     className="flex items-center space-x-1.5 px-3.5 py-2 bg-amber-950/30 hover:bg-amber-900/50 text-amber-300 border border-amber-800/40 rounded-xl text-xs font-medium apple-press transition disabled:opacity-50"
                   >
@@ -490,6 +500,82 @@ export default function ReviewQueuePage() {
           )}
         </div>
       </div>
+
+      {/* In-App Multi-CPSE Dispute Arbitration Modal */}
+      {disputeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="glass-card max-w-lg w-full rounded-2xl p-6 space-y-4 border border-white/[0.1] bg-zinc-950/95">
+            <div className="flex items-center space-x-2.5 border-b border-white/[0.08] pb-3">
+              <ShieldAlert className="h-5 w-5 text-amber-400" />
+              <div>
+                <h3 className="text-sm font-bold text-white">File Formal CPSE Arbitration Dispute</h3>
+                <p className="text-[11px] text-zinc-400">Escalates this match candidate cluster to the National Data Steward.</p>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="text-zinc-300 font-semibold block mb-1">Dissenting CPSE Entity</label>
+                <select
+                  value={disputeCpse}
+                  onChange={(e) => setDisputeCpse(e.target.value)}
+                  className="w-full glass-input text-white rounded-xl px-3 py-2 focus:outline-none"
+                >
+                  <option value="IOCL">IOCL (Indian Oil Corporation)</option>
+                  <option value="CPCL">CPCL (Chennai Petroleum)</option>
+                  <option value="BPCL">BPCL (Bharat Petroleum)</option>
+                  <option value="NTPC">NTPC Limited</option>
+                  <option value="SAIL">SAIL</option>
+                  <option value="ONGC">ONGC</option>
+                  <option value="COALINDIA">Coal India</option>
+                  <option value="BHEL">BHEL</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-zinc-300 font-semibold block mb-1">Technical Ground for Dispute</label>
+                <textarea
+                  rows={3}
+                  placeholder="Explain why materials are not interchangeable (e.g., MOC differential, trim variation, design pressure mismatch)..."
+                  value={disputeReason}
+                  onChange={(e) => setDisputeReason(e.target.value)}
+                  className="w-full glass-input text-white rounded-xl p-3 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end space-x-2.5 pt-2">
+              <button
+                onClick={() => setDisputeModalOpen(false)}
+                className="px-4 py-2 glass-input hover:bg-zinc-800 text-zinc-300 rounded-xl text-xs font-semibold transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (!selectedClusterId || !disputeReason.trim()) return;
+                  setActionLoading(true);
+                  try {
+                    await api.fileDispute(selectedClusterId, disputeReason.trim(), disputeCpse);
+                    setDisputeModalOpen(false);
+                    setDisputeReason("");
+                    setActionMessage(`Dispute filed by ${disputeCpse}. Escalated to National Data Steward.`);
+                    await loadQueue();
+                  } catch (e: any) {
+                    alert(`Dispute filing error: ${e.message}`);
+                  } finally {
+                    setActionLoading(false);
+                  }
+                }}
+                disabled={!disputeReason.trim() || actionLoading}
+                className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-black rounded-xl text-xs font-bold transition disabled:opacity-50"
+              >
+                Submit Dispute
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

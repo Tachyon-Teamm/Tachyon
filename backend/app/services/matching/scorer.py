@@ -37,15 +37,17 @@ class CompositeScorer:
                 return 0.0
             cos_sim = dot / (norm_a * norm_b)
 
-        return max(0.0, min(1.0, (cos_sim + 1.0) / 2.0 if cos_sim < 0 else cos_sim))
+        return max(0.0, min(1.0, float(cos_sim)))
 
     @staticmethod
     def calculate_attribute_overlap(specs_a: Dict[str, Any], specs_b: Dict[str, Any]) -> float:
         """
-        Calculates weighted Jaccard overlap on parametric extracted attributes.
+        Calculates dynamic weighted Jaccard overlap on all technical attributes.
+        Supports both predefined engineering keys and arbitrary dynamic JSONB attributes.
         """
-        weights = {
+        base_weights = {
             "clean_part_number": 0.40,
+            "part_number": 0.35,
             "item_noun": 0.30,
             "nominal_size": 0.25,
             "pressure_class": 0.20,
@@ -59,27 +61,36 @@ class CompositeScorer:
             "schedule": 0.05
         }
         
+        attrs_a = dict(specs_a.get("technical_attributes") or {})
+        attrs_a.update({k: v for k, v in specs_a.items() if k not in ("technical_attributes", "extracted_attributes") and not k.startswith("_")})
+        
+        attrs_b = dict(specs_b.get("technical_attributes") or {})
+        attrs_b.update({k: v for k, v in specs_b.items() if k not in ("technical_attributes", "extracted_attributes") and not k.startswith("_")})
+        
+        all_keys = set(attrs_a.keys()).union(set(attrs_b.keys()))
+        if not all_keys:
+            return 0.0
+
         total_weight = 0.0
         matched_weight = 0.0
         
-        for field, weight in weights.items():
-            val_a = specs_a.get(field)
-            val_b = specs_b.get(field)
+        for field in all_keys:
+            weight = base_weights.get(field, 0.20)
+            val_a = attrs_a.get(field)
+            val_b = attrs_b.get(field)
             
-            # If both records have this attribute present
-            if val_a and val_b:
+            if val_a is not None and val_b is not None:
+                str_a = str(val_a).strip().upper()
+                str_b = str(val_b).strip().upper()
+                if str_a and str_b:
+                    total_weight += weight
+                    if str_a == str_b or str_a in str_b or str_b in str_a:
+                        matched_weight += weight
+            elif (val_a is not None and str(val_a).strip()) or (val_b is not None and str(val_b).strip()):
                 total_weight += weight
-                if str(val_a).strip().upper() == str(val_b).strip().upper():
-                    matched_weight += weight
-            elif not val_a and not val_b:
-                # Neutral: both missing this spec (e.g. schedule for valves, or part_no for pipes)
-                continue
-            else:
-                # One has it, one doesn't
-                total_weight += weight
-                
+
         if total_weight == 0:
-            return 0.70 # Default base attribute score if minimal specs
+            return 0.0
             
         return float(matched_weight / total_weight)
 
@@ -136,11 +147,17 @@ class CompositeScorer:
     @classmethod
     def get_reranker(cls):
         if cls._reranker_model is None:
-            try:
-                from sentence_transformers import CrossEncoder
-                cls._reranker_model = CrossEncoder(settings.RERANKER_MODEL, local_files_only=True)
-            except Exception:
-                cls._reranker_model = None
+            from app.services.matching.embeddings import _INFERENCE_LOCK, get_inference_device
+            with _INFERENCE_LOCK:
+                if cls._reranker_model is None:
+                    try:
+                        from sentence_transformers import CrossEncoder
+                        device = get_inference_device()
+                        cls._reranker_model = CrossEncoder(settings.RERANKER_MODEL, device=device)
+                        print(f"[CompositeScorer] Successfully loaded CrossEncoder {settings.RERANKER_MODEL} on device: {device}")
+                    except Exception as e:
+                        print(f"[CompositeScorer] Failed loading reranker {settings.RERANKER_MODEL}: {e}")
+                        cls._reranker_model = None
         return cls._reranker_model
 
     @classmethod
@@ -152,9 +169,19 @@ class CompositeScorer:
         reranker = cls.get_reranker()
         if reranker is not None:
             try:
-                raw_score = reranker.predict([(desc_a, desc_b)])[0]
-                # Sigmoid normalize if raw logits
-                prob = 1.0 / (1.0 + math.exp(-float(raw_score))) if isinstance(raw_score, (int, float)) else float(raw_score)
+                from app.services.matching.embeddings import _INFERENCE_LOCK
+                with _INFERENCE_LOCK:
+                    raw_score = reranker.predict([(desc_a, desc_b)])[0]
+                val = float(raw_score)
+                if math.isnan(val):
+                    return None
+                # Numerically stable sigmoid
+                if val >= 50.0:
+                    prob = 1.0
+                elif val <= -50.0:
+                    prob = 0.0
+                else:
+                    prob = 1.0 / (1.0 + math.exp(-val))
                 return max(0.0, min(1.0, prob))
             except Exception:
                 return None
@@ -220,8 +247,11 @@ class CompositeScorer:
         # 2. Parametric Attribute Overlap
         s_spec = cls.calculate_attribute_overlap(specs_a, specs_b)
 
-        # 3. Sparse Token Similarity (BM25 / SPLADE)
-        if sparse_a and sparse_b:
+        # 3. Sparse Token Similarity (BM25 / Specificity Overlap)
+        if desc_a and desc_b:
+            from app.services.matching.embeddings import EmbeddingService
+            s_sparse = EmbeddingService.compute_bm25_pairwise_similarity(desc_a, desc_b)
+        elif sparse_a and sparse_b:
             from app.services.matching.embeddings import EmbeddingService
             s_sparse = EmbeddingService.compute_sparse_similarity(sparse_a, sparse_b)
         else:
@@ -238,9 +268,11 @@ class CompositeScorer:
             (proc_b.get("unit_price") or proc_b.get("vendor_normalized"))
         )
 
+        # Dynamic Signal Normalization (Gracefully re-allocates weights when specs or PO are absent)
+        has_spec = bool(s_spec > 0 or (specs_a and specs_b and (len(specs_a) > 1 or len(specs_b) > 1)))
         w_sem_eff = w_sem if has_sem else 0.0
-        w_spec_eff = w_spec
-        w_sparse_eff = w_sparse if ((sparse_a and sparse_b) or has_sem) else 0.0
+        w_spec_eff = w_spec if has_spec else 0.0
+        w_sparse_eff = w_sparse if ((sparse_a and sparse_b) or (desc_a and desc_b) or has_sem) else 0.0
         w_po_eff = w_po if has_proc else 0.0
 
         total_active = w_sem_eff + w_spec_eff + w_sparse_eff + w_po_eff
@@ -250,7 +282,7 @@ class CompositeScorer:
             w_sparse = round(w_sparse_eff / total_active, 4)
             w_po = round(w_po_eff / total_active, 4)
         else:
-            w_sem, w_spec, w_sparse, w_po = 0.0, 1.0, 0.0, 0.0
+            w_sem, w_spec, w_sparse, w_po = 0.5, 0.0, 0.5, 0.0
 
         composite = (w_sem * s_sem) + (w_spec * s_spec) + (w_sparse * s_sparse) + (w_po * s_po)
 
@@ -258,8 +290,8 @@ class CompositeScorer:
         cross_score = None
         if desc_a and desc_b and composite >= 0.65:
             cross_score = cls.calculate_cross_encoder_score(desc_a, desc_b)
-            if cross_score is not None:
-                composite = 0.50 * composite + 0.50 * cross_score
+            if cross_score is not None and cross_score > 0.50:
+                composite = 0.70 * composite + 0.30 * cross_score
 
         composite = round(min(1.0, max(0.0, composite)), 4)
 

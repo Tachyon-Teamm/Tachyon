@@ -60,6 +60,9 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                 "uom": d.get(mapping_config.get("uom", "UOM"))
             })
         quality_report = DataProfiler.profile_records(batch_dicts)
+        if hasattr(batch, 'quality_score'):
+            batch.quality_score = quality_report.quality_score
+            db.commit()
 
         # Process records in memory-safe mini-batches of 64
         mini_batch_size = 64
@@ -87,7 +90,32 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                 specs["base_uom"] = base_uom
                 specs["package_multiplier"] = multiplier
                 norm_vendor = VendorNormalizer.normalize_vendor(raw_vendor)
-                tech_attrs = specs.get("technical_attributes") or {}
+                
+                # Dynamic Schema-on-Read: capture all non-core spreadsheet columns into tech_attrs
+                core_source_cols = {
+                    mapping_config.get("material_code"),
+                    mapping_config.get("short_description"),
+                    mapping_config.get("uom"),
+                    mapping_config.get("base_price"),
+                    mapping_config.get("vendor_name"),
+                    mapping_config.get("hsn_code")
+                }
+                tech_attrs = {}
+                for k, v in data.items():
+                    if k not in core_source_cols and v is not None and str(v).strip() != "":
+                        clean_k = re.sub(r'[^a-zA-Z0-9_]', '_', str(k).strip().lower()).strip('_')
+                        if clean_k:
+                            tech_attrs[clean_k] = str(v).strip()
+                            
+                # Merge extracted specs with tech_attrs (spreadsheet column values take precedence over regex guesses)
+                extracted_tech = dict(specs.get("technical_attributes") or {})
+                extracted_tech.update(tech_attrs)
+                tech_attrs = extracted_tech
+
+                # Zero-Shot Taxonomy Categorization
+                from app.services.matching.taxonomy_classifier import TaxonomyClassifier
+                top_cats = TaxonomyClassifier.classify_description(db, desc, top_k=1)
+                pred_cat = top_cats[0] if top_cats else {"code": "GENERAL", "name": "General Industrial", "confidence": 0.5}
 
                 rec_completeness = 1.0 if (mat_code and desc and raw_uom) else 0.5
                 if tech_attrs:
@@ -105,6 +133,9 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                     "multiplier": multiplier,
                     "specs": specs,
                     "tech_attrs": tech_attrs,
+                    "category_code": pred_cat.get("code", "GENERAL"),
+                    "category_confidence": pred_cat.get("confidence", 1.0),
+                    "predicted_category_name": pred_cat.get("name", ""),
                     "norm_vendor": norm_vendor,
                     "raw_vendor": raw_vendor,
                     "raw_price": raw_price,
@@ -165,6 +196,9 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                             clean_part_number=item["specs"].get("clean_part_number"),
                             clearance_suffix=item["specs"].get("clearance_suffix"),
                             is_kit_or_assembly=item["specs"].get("is_kit_or_assembly", False),
+                            category_code=item.get("category_code") or item["specs"].get("item_noun") or "GENERAL",
+                            category_confidence=item.get("category_confidence", 1.0),
+                            predicted_category_name=item.get("predicted_category_name"),
                             technical_attributes=item["tech_attrs"],
                             extracted_attributes=item["specs"],
                             status="ACTIVE"
@@ -172,6 +206,9 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                         db.add(mat)
                         db.flush()
                     else:
+                        mat.category_code = item.get("category_code") or mat.category_code
+                        mat.category_confidence = item.get("category_confidence", mat.category_confidence)
+                        mat.predicted_category_name = item.get("predicted_category_name") or mat.predicted_category_name
                         mat.technical_attributes = item["tech_attrs"]
                         mat.extracted_attributes = item["specs"]
 

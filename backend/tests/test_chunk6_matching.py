@@ -24,6 +24,13 @@ def test_chunk6_async_matching_trigger():
     assert job_res.status_code == 200
     assert job_res.json()["id"] == job_id
 
+    # Wait for async background worker to settle before moving to next test file
+    for _ in range(50):
+        time.sleep(0.1)
+        r = client.get(f"/api/v1/matching/jobs/{job_id}")
+        if r.json()["status"] in ("COMPLETED", "FAILED"):
+            break
+
 def test_chunk6_incremental_matching_endpoint():
     client = TestClient(app)
     db = next(get_sync_db())
