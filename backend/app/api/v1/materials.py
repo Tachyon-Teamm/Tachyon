@@ -27,8 +27,15 @@ async def get_materials(
 ):
     # Support legacy limit/offset overrides while defaulting to clean page/page_size
     effective_limit = limit if limit is not None else page_size
-    effective_offset = offset if offset is not None else (page - 1) * effective_limit
-    effective_page = (effective_offset // effective_limit) + 1 if effective_limit > 0 else 1
+    if offset is not None:
+        effective_offset = offset
+        effective_page = (offset // effective_limit) + 1 if effective_limit > 0 else 1
+    elif page is not None:
+        effective_offset = (page - 1) * effective_limit
+        effective_page = page
+    else:
+        effective_offset = 0
+        effective_page = 1
 
     # Base search filter clauses
     search_filters = []

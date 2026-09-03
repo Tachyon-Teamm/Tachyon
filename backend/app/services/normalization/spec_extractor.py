@@ -153,10 +153,15 @@ class SpecExtractor:
         elif re.search(r'\bSS\s*304L?\b|\bSTAINLESS\s*STEEL\s*304\b|\bCF8\b|\bTP304\b', desc):
             specs["moc"] = "STAINLESS STEEL 304 (CF8/TP304)"
         elif re.search(r'\bCARBON\s*STEEL\b|\bCS\b', desc):
-            if specs.get("item_noun") == "PIPE":
+            noun = (specs.get("item_noun") or "").upper()
+            if noun == "PIPE":
                 specs["moc"] = "ASTM A106 GR.B"
-            else:
+            elif "VALVE" in noun:
                 specs["moc"] = "ASTM A216 WCB"
+            elif "FLANGE" in noun:
+                specs["moc"] = "ASTM A105"
+            else:
+                specs["moc"] = "CARBON STEEL"
         elif re.search(r'\bMONEL\b', desc):
             specs["moc"] = "MONEL"
         elif re.search(r'\bINCONEL\b', desc):

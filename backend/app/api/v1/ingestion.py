@@ -429,6 +429,7 @@ async def list_batches(db: Session = Depends(get_db)):
             total_rows=b.total_rows,
             processed_rows=b.processed_rows,
             status=b.status,
+            quality_score=getattr(b, "quality_score", 1.0),
             created_at=b.created_at
         ))
     return out

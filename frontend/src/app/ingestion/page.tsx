@@ -8,8 +8,10 @@ import {
   CheckCircle2, 
   ArrowRight, 
   AlertCircle, 
-  RefreshCw, 
+  RefreshCw,
   FileCheck2,
+  Clock,
+  History,
   Layers
 } from "lucide-react";
 
@@ -26,6 +28,23 @@ export default function IngestionPage() {
   const [batchResult, setBatchResult] = useState<any>(null);
   const [progressInfo, setProgressInfo] = useState<{ id: number; processed: number; total: number; percent: number; status: string } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [batchesLoading, setBatchesLoading] = useState<boolean>(true);
+
+  const loadBatches = async () => {
+    setBatchesLoading(true);
+    try {
+      const data = await api.getBatches();
+      setBatches(data);
+    } catch (err) {
+      console.error("Failed to load batches", err);
+    } finally {
+      setBatchesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadBatches();
+  }, []);
 
   const loadCpsesAndBatches = useCallback(async () => {
     try {
@@ -217,7 +236,7 @@ export default function IngestionPage() {
             clearInterval(pollTimer);
             setIsStartingBatch(false);
             setBatchResult((prev: any) => ({ ...prev, status: statusRes.status, processed_rows: statusRes.processed_rows }));
-            api.getBatches().then(setBatches).catch(() => {});
+            loadBatches();
           }
         } catch (pollErr) {
           console.error("Batch polling error:", pollErr);
@@ -612,6 +631,15 @@ export default function IngestionPage() {
               </div>
 
               <div className="flex items-center space-x-3">
+                {progressInfo?.status === "COMPLETED" && (
+                  <Link
+                    href="/review"
+                    className="flex items-center space-x-2 px-5 py-2.5 bg-emerald-400 hover:bg-emerald-300 text-black rounded-xl text-xs font-bold shadow-sm apple-press transition"
+                  >
+                    <span>Proceed to Review Queue</span>
+                    <ArrowRight className="h-4 w-4 text-black" />
+                  </Link>
+                )}
                 <button
                   onClick={handleStartBatch}
                   disabled={isStartingBatch || !canStartBatch || (progressInfo?.status === "PROCESSING")}
@@ -626,16 +654,28 @@ export default function IngestionPage() {
         </div>
       )}
 
-      {/* Step 4: Recent Ingestion Batches Ledger */}
-      <div className="glass-card p-6 rounded-2xl space-y-4">
+      {/* Batch Ingestion History Table */}
+      <div className="glass-card rounded-2xl overflow-hidden shadow-sm space-y-3 p-6">
         <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <Layers className="h-4 w-4 text-zinc-400" />
-            <span className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wider">
-              Recent Ingestion Batches & Jobs
-            </span>
+          <div className="space-y-0.5">
+            <h2 className="text-sm font-bold tracking-tight text-white flex items-center space-x-2">
+              <History className="h-4 w-4 text-zinc-300" />
+              <span>Batch Ingestion History</span>
+            </h2>
+            <p className="text-xs text-zinc-400">
+              Audit record of ERP batches loaded, data completeness, and profiling quality scores.
+            </p>
           </div>
-          <span className="text-[11px] text-zinc-500">{batches.length} total batches</span>
+          <div className="flex items-center space-x-3">
+            <span className="text-[11px] text-zinc-500">{batches.length} total batches</span>
+            <button
+              onClick={loadBatches}
+              className="flex items-center space-x-1.5 px-3 py-1.5 glass-input hover:bg-zinc-800 text-zinc-300 rounded-xl text-xs font-medium apple-press transition"
+            >
+              <RefreshCw className={`h-3 w-3 ${batchesLoading ? "animate-spin" : ""}`} />
+              <span>Refresh</span>
+            </button>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -643,45 +683,58 @@ export default function IngestionPage() {
             <thead className="bg-zinc-950 text-zinc-400 font-medium border-b border-white/[0.08]">
               <tr>
                 <th className="py-3 px-4">Batch ID</th>
-                <th className="py-3 px-4">CPSE</th>
+                <th className="py-3 px-4">CPSE Entity</th>
                 <th className="py-3 px-4">File Name</th>
-                <th className="py-3 px-4">Progress</th>
+                <th className="py-3 px-4">Processed / Total</th>
+                <th className="py-3 px-4">Quality Score</th>
                 <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4">Timestamp</th>
+                <th className="py-3 px-4 text-right">Created</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.04]">
-              {batches.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="py-5 text-center text-zinc-500">
-                    No ingestion batches recorded yet. Upload an extract or click a Quick Sample above.
+              {batches.map((b) => (
+                <tr key={b.id} className="hover:bg-zinc-900/40 transition-colors">
+                  <td className="py-3.5 px-4 font-mono font-bold text-white">#{b.id}</td>
+                  <td className="py-3.5 px-4">
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-zinc-800 text-zinc-200 border border-white/[0.08]">
+                      {b.cpse_code}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4 font-mono text-zinc-300 text-[11px]">{b.file_name}</td>
+                  <td className="py-3.5 px-4 font-mono text-zinc-300">
+                    {b.processed_rows} / {b.total_rows}
+                  </td>
+                  <td className="py-3.5 px-4 font-mono font-bold">
+                    <span className={`px-2 py-0.5 rounded text-[10px] ${
+                      (b.quality_score ?? 1.0) >= 0.8
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                    }`}>
+                      {((b.quality_score ?? 1.0) * 100).toFixed(0)}%
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4">
+                    <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-semibold ${
+                      b.status === "COMPLETED"
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : b.status === "PROCESSING"
+                        ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                        : "bg-zinc-800 text-zinc-400"
+                    }`}>
+                      {b.status}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono text-zinc-400 text-[11px]">
+                    {b.created_at ? new Date(b.created_at).toLocaleDateString() : "—"}
                   </td>
                 </tr>
-              ) : (
-                batches.map((b) => (
-                  <tr key={b.id} className="hover:bg-zinc-900/40 transition-colors">
-                    <td className="py-3 px-4 font-mono font-bold text-white">#{b.id}</td>
-                    <td className="py-3 px-4 font-semibold text-zinc-200">{b.cpse_code}</td>
-                    <td className="py-3 px-4 font-mono text-zinc-300">{b.file_name}</td>
-                    <td className="py-3 px-4 font-mono">
-                      {b.processed_rows} / {b.total_rows} rows
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                        b.status === "COMPLETED"
-                          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                          : b.status === "PROCESSING" || b.status === "PENDING"
-                          ? "bg-sky-500/10 text-sky-400 border border-sky-500/20 inline-flex items-center space-x-1"
-                          : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
-                      }`}>
-                        {b.status}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-zinc-500 font-mono text-[11px]">
-                      {new Date(b.created_at).toLocaleString()}
-                    </td>
-                  </tr>
-                ))
+              ))}
+              {batches.length === 0 && !batchesLoading && (
+                <tr>
+                  <td colSpan={7} className="py-8 text-center text-zinc-500">
+                    No ingestion batches uploaded yet. Choose an ERP sample above to start.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>

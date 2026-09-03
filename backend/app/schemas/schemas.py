@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ----------------- Auth & User -----------------
 class Token(BaseModel):
@@ -179,10 +179,21 @@ class ClusterCardResponse(BaseModel):
 
 class ReviewActionRequest(BaseModel):
     cluster_group_id: str
-    decision_type: Literal["IDENTICAL", "SUBSTITUTE", "REJECT", "SPLIT"]
+    decision_type: Literal[
+        "IDENTICAL", "FUNCTIONAL_EQUIVALENT", "BRAND_ALTERNATIVE",
+        "KIT_COMPONENT", "PACKAGING_VARIANT", "SUPERSEDED", "SUBSTITUTE",
+        "REJECT", "SPLIT"
+    ]
     custom_golden_description: Optional[str] = None
     selected_material_ids: Optional[List[int]] = None
     reviewer_notes: Optional[str] = None
+
+    @field_validator("decision_type", mode="before")
+    @classmethod
+    def normalize_decision_type(cls, v: Any) -> str:
+        if isinstance(v, str):
+            return v.strip().upper()
+        return v
 
 # ----------------- Golden Record & CNMC -----------------
 class GoldenRecordResponse(BaseModel):
@@ -241,9 +252,10 @@ class DashboardSummaryResponse(BaseModel):
 class DemandSavingsItem(BaseModel):
     cnmc_code: str
     material_description: str
-    cpcl_volume: float
-    iocl_volume: float
-    bpcl_volume: float
+    organization_volumes: Dict[str, float] = {}
+    cpcl_volume: float = 0.0
+    iocl_volume: float = 0.0
+    bpcl_volume: float = 0.0
     total_volume: float
     base_uom: str
     avg_price: float
@@ -253,15 +265,38 @@ class DemandSavingsItem(BaseModel):
 
 class QualityHeatmapItem(BaseModel):
     field_name: str
-    cpcl_pct: float
-    iocl_pct: float
-    bpcl_pct: float
+    cpse_scores: Dict[str, float] = {}
+    cpcl_pct: float = 0.0
+    iocl_pct: float = 0.0
+    bpcl_pct: float = 0.0
 
 class VennOverlapData(BaseModel):
-    cpcl_only: int
-    iocl_only: int
-    bpcl_only: int
-    cpcl_iocl: int
-    iocl_bpcl: int
-    cpcl_bpcl: int
-    all_three: int
+    cpcl_only: int = 0
+    iocl_only: int = 0
+    bpcl_only: int = 0
+    cpcl_iocl: int = 0
+    iocl_bpcl: int = 0
+    cpcl_bpcl: int = 0
+    all_three: int = 0
+    total_clusters: int = 0
+    multi_cpse_clusters: int = 0
+    pairwise_overlap: Dict[str, int] = Field(default_factory=dict)
+    organization_counts: Dict[str, int] = Field(default_factory=dict)
+
+# ----------------- Audit & Governance -----------------
+class AuditLogResponse(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    action: str
+    entity_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+
+class AuditVerifyResponse(BaseModel):
+    is_valid: bool
+    total_entries_verified: int
+    status: str
+    genesis_hash: Optional[str] = None
+    latest_hash: Optional[str] = None
+    tampered_entry_id: Optional[int] = None

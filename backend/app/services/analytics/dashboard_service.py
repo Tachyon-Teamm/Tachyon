@@ -178,18 +178,15 @@ class DashboardService:
             golden = c.golden_record
             links = c.crosswalk_links or []
             
-            cpcl_vol = 0.0
-            iocl_vol = 0.0
-            bpcl_vol = 0.0
+            org_vols: Dict[str, float] = {}
             prices = []
             
             for link in links:
                 mat = link.material
                 if not mat:
                     continue
-                    
-                procs = mat.procurement_records
-                proc = procs[0] if procs else None
+                procs = getattr(mat, "procurement_records", None)
+                proc = procs[0] if procs else db.query(ProcurementHistory).filter(ProcurementHistory.material_id == mat.id).first()
                 mult = (getattr(mat, "package_multiplier", 1.0) or 1.0)
                 if mult <= 0:
                     mult = 1.0
@@ -201,15 +198,14 @@ class DashboardService:
                 if norm_price > 0:
                     prices.append(norm_price)
                     
-                cpse_code = link.cpse.code if link.cpse else (mat.cpse.code if mat.cpse else "")
-                if cpse_code == "CPCL":
-                    cpcl_vol += qty
-                elif cpse_code == "IOCL":
-                    iocl_vol += qty
-                elif cpse_code == "BPCL":
-                    bpcl_vol += qty
+                cpse_code = link.cpse.code if link.cpse else (mat.cpse.code if mat.cpse else "OTHER")
+                org_vols[cpse_code] = org_vols.get(cpse_code, 0.0) + qty
                     
-            total_vol = cpcl_vol + iocl_vol + bpcl_vol
+            total_vol = sum(org_vols.values())
+            cpcl_vol = org_vols.get("CPCL", 0.0)
+            iocl_vol = org_vols.get("IOCL", 0.0)
+            bpcl_vol = org_vols.get("BPCL", 0.0)
+            
             if not prices:
                 avg_p, min_p, max_p = 0.0, 0.0, 0.0
                 savings_lakhs = 0.0
@@ -223,6 +219,7 @@ class DashboardService:
             table_rows.append({
                 "cnmc_code": c.code,
                 "material_description": golden.standardized_description if golden else "STANDARDIZED ITEM",
+                "organization_volumes": {k: round(v, 2) for k, v in org_vols.items()},
                 "cpcl_volume": round(cpcl_vol, 2),
                 "iocl_volume": round(iocl_vol, 2),
                 "bpcl_volume": round(bpcl_vol, 2),
@@ -240,73 +237,45 @@ class DashboardService:
 
     @classmethod
     def get_data_quality_heatmap(cls, db: Session) -> List[Dict[str, Any]]:
-        """
-        Consolidated specification completeness calculation.
-        Reduces 24 sequential queries down to 3 single-pass CPSE queries.
-        """
-        cpse_stats: Dict[str, Dict[str, int]] = {}
-        for cpse_code in ["CPCL", "IOCL", "BPCL"]:
-            cpse = db.query(CPSE).filter(CPSE.code == cpse_code).first()
-            if not cpse:
-                cpse_stats[cpse_code] = {"total": 0, "size": 0, "pressure": 0, "moc": 0, "spec": 0}
-                continue
-                
-            row = (
-                db.query(
-                    func.count(Material.id).label("total"),
-                    func.count(Material.nominal_size).label("size"),
-                    func.count(Material.pressure_class).label("pressure"),
-                    func.count(Material.moc).label("moc"),
-                    func.count(Material.standard_spec).label("spec")
-                )
-                .filter(Material.cpse_id == cpse.id)
-                .first()
-            )
-            cpse_stats[cpse_code] = {
-                "total": row.total if row else 0,
-                "size": row.size if row else 0,
-                "pressure": row.pressure if row else 0,
-                "moc": row.moc if row else 0,
-                "spec": row.spec if row else 0
-            }
+        # Calculate real completeness % of critical fields across all CPSEs dynamically
+        all_cpses = db.query(CPSE).filter(CPSE.is_active == True).all()
 
-        def pct(code: str, attr: str) -> float:
-            tot = cpse_stats[code]["total"]
-            val = cpse_stats[code][attr]
-            return round((val / tot) * 100.0, 1) if tot > 0 else 0.0
-
-        return [
-            {
-                "field_name": "Size / Dimensions",
-                "cpcl_pct": pct("CPCL", "size"),
-                "iocl_pct": pct("IOCL", "size"),
-                "bpcl_pct": pct("BPCL", "size"),
-            },
-            {
-                "field_name": "Pressure Class",
-                "cpcl_pct": pct("CPCL", "pressure"),
-                "iocl_pct": pct("IOCL", "pressure"),
-                "bpcl_pct": pct("BPCL", "pressure"),
-            },
-            {
-                "field_name": "MOC / Metallurgy",
-                "cpcl_pct": pct("CPCL", "moc"),
-                "iocl_pct": pct("IOCL", "moc"),
-                "bpcl_pct": pct("BPCL", "moc"),
-            },
-            {
-                "field_name": "Standard / Spec",
-                "cpcl_pct": pct("CPCL", "spec"),
-                "iocl_pct": pct("IOCL", "spec"),
-                "bpcl_pct": pct("BPCL", "spec"),
-            }
+        fields = [
+            ("Size / Dimensions", Material.nominal_size),
+            ("Pressure Class", Material.pressure_class),
+            ("MOC / Metallurgy", Material.moc),
+            ("Schedule / Rating", Material.schedule),
+            ("End Connection", Material.end_connection),
+            ("Design Standard Spec", Material.standard_spec),
         ]
 
+        def calc_field_pct(field_attr, cpse_id: int) -> float:
+            tot = db.query(func.count(Material.id)).filter(Material.cpse_id == cpse_id).scalar() or 0
+            if tot == 0:
+                return 0.0
+            non_null = db.query(func.count(Material.id)).filter(
+                Material.cpse_id == cpse_id,
+                field_attr.isnot(None)
+            ).scalar() or 0
+            return round((non_null / tot) * 100.0, 1)
+
+        heatmap = []
+        for name, attr in fields:
+            scores = {cpse.code: calc_field_pct(attr, cpse.id) for cpse in all_cpses}
+            heatmap.append({
+                "field_name": name,
+                "cpse_scores": scores,
+                "cpcl_pct": scores.get("CPCL", 0.0),
+                "iocl_pct": scores.get("IOCL", 0.0),
+                "bpcl_pct": scores.get("BPCL", 0.0),
+            })
+        return heatmap
+
     @classmethod
-    def get_venn_overlap(cls, db: Session) -> Dict[str, int]:
+    def get_venn_overlap(cls, db: Session) -> Dict[str, Any]:
         """
         Calculates multi-CPSE shared CNMCs in a single fast SQL query.
-        Eliminates per-CNMC looping.
+        Eliminates per-CNMC looping while supporting arbitrary CPSEs.
         """
         all_three = 0
         cpcl_iocl = 0
@@ -315,6 +284,9 @@ class DashboardService:
         cpcl_only = 0
         iocl_only = 0
         bpcl_only = 0
+        
+        pairwise_overlap: Dict[str, int] = {}
+        org_counts: Dict[str, int] = {}
         
         # Single query joining Crosswalk with CPSE codes
         rows = (
@@ -327,20 +299,35 @@ class DashboardService:
         for cnmc_id, code in rows:
             cnmc_map.setdefault(cnmc_id, set()).add(code)
             
-        for codes in cnmc_map.values():
-            if len(codes) >= 3 or ("CPCL" in codes and "IOCL" in codes and "BPCL" in codes):
+        total_clusters = len(cnmc_map)
+        multi_cpse_clusters = 0
+
+        for code_set in cnmc_map.values():
+            codes = sorted(list(code_set))
+            if len(codes) > 1:
+                multi_cpse_clusters += 1
+                
+            for code in codes:
+                org_counts[code] = org_counts.get(code, 0) + 1
+                
+            for i in range(len(codes)):
+                for j in range(i + 1, len(codes)):
+                    pair_key = f"{codes[i]}_{codes[j]}"
+                    pairwise_overlap[pair_key] = pairwise_overlap.get(pair_key, 0) + 1
+
+            if len(code_set) >= 3 or ("CPCL" in code_set and "IOCL" in code_set and "BPCL" in code_set):
                 all_three += 1
-            elif "CPCL" in codes and "IOCL" in codes:
+            elif "CPCL" in code_set and "IOCL" in code_set:
                 cpcl_iocl += 1
-            elif "IOCL" in codes and "BPCL" in codes:
+            elif "IOCL" in code_set and "BPCL" in code_set:
                 iocl_bpcl += 1
-            elif "CPCL" in codes and "BPCL" in codes:
+            elif "CPCL" in code_set and "BPCL" in code_set:
                 cpcl_bpcl += 1
-            elif "CPCL" in codes:
+            elif "CPCL" in code_set:
                 cpcl_only += 1
-            elif "IOCL" in codes:
+            elif "IOCL" in code_set:
                 iocl_only += 1
-            elif "BPCL" in codes:
+            elif "BPCL" in code_set:
                 bpcl_only += 1
 
         return {
@@ -350,5 +337,9 @@ class DashboardService:
             "cpcl_iocl": cpcl_iocl,
             "iocl_bpcl": iocl_bpcl,
             "cpcl_bpcl": cpcl_bpcl,
-            "all_three": all_three
+            "all_three": all_three,
+            "total_clusters": total_clusters,
+            "multi_cpse_clusters": multi_cpse_clusters,
+            "pairwise_overlap": pairwise_overlap,
+            "organization_counts": org_counts
         }

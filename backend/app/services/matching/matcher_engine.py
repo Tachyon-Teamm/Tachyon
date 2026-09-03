@@ -74,7 +74,7 @@ class MatcherEngine:
                 proc = proc_map.get(m.id)
                 if proc:
                     procurement_dict[m.id] = {
-                        "vendor_normalized": proc.vendor_normalized,
+                        "vendor_normalized": proc.vendor_normalized or proc.vendor_name,
                         "unit_price": proc.unit_price,
                         "hsn_code": proc.hsn_code
                     }

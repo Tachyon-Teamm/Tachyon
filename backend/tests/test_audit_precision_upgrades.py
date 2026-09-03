@@ -86,17 +86,74 @@ class TestAuditPrecisionUpgrades(unittest.TestCase):
         self.assertEqual(res["item_noun"], "ITEM")
 
     def test_9_review_action_request_validation(self):
-        """Verify ReviewActionRequest strictly validates allowed decision types"""
+        """Verify ReviewActionRequest strictly validates allowed decision types including all 7 relationships"""
         from app.schemas.schemas import ReviewActionRequest
         from pydantic import ValidationError
         
-        # Valid action
-        valid_req = ReviewActionRequest(cluster_group_id="c_1", decision_type="IDENTICAL")
-        self.assertEqual(valid_req.decision_type, "IDENTICAL")
+        # Valid actions across all 7 relationships
+        for rel in [
+            "IDENTICAL", "FUNCTIONAL_EQUIVALENT", "BRAND_ALTERNATIVE",
+            "KIT_COMPONENT", "PACKAGING_VARIANT", "SUPERSEDED", "SUBSTITUTE",
+            "REJECT", "SPLIT"
+        ]:
+            req = ReviewActionRequest(cluster_group_id="c_1", decision_type=rel)
+            self.assertEqual(req.decision_type, rel)
+
+        # Lowercase normalization check
+        lower_req = ReviewActionRequest(cluster_group_id="c_1", decision_type="functional_equivalent")
+        self.assertEqual(lower_req.decision_type, "FUNCTIONAL_EQUIVALENT")
         
         # Invalid action should raise ValidationError
         with self.assertRaises(ValidationError):
             ReviewActionRequest(cluster_group_id="c_1", decision_type="INVALID_TYPO")
+
+    def test_10_audit_hash_chain_verification_and_tamper_detection(self):
+        """Verify AuditService.verify_chain accurately validates chain and catches tampering"""
+        from unittest.mock import MagicMock
+        from app.services.governance.audit_service import AuditService
+        from app.models.models import AuditLog
+
+        # Setup mock db with 3 chained entries
+        class MockAuditEntry:
+            def __init__(self, entry_id, action, evidence):
+                self.id = entry_id
+                self.action = action
+                self.entity_type = "CNMC_CODE"
+                self.entity_id = f"CNMC-{entry_id}"
+                self.user_id = 1
+                self.evidence = evidence
+
+        # Entry 1 (Genesis)
+        ev1 = {"cluster": "c1"}
+        h1 = AuditService._compute_entry_hash("GENESIS", "ACTION_1", "CNMC_CODE", "CNMC-1", 1, ev1)
+        ev1["_prev_hash"] = "GENESIS"
+        ev1["_hash"] = h1
+        e1 = MockAuditEntry(1, "ACTION_1", ev1)
+
+        # Entry 2
+        ev2 = {"cluster": "c2"}
+        h2 = AuditService._compute_entry_hash(h1, "ACTION_2", "CNMC_CODE", "CNMC-2", 1, ev2)
+        ev2["_prev_hash"] = h1
+        ev2["_hash"] = h2
+        e2 = MockAuditEntry(2, "ACTION_2", ev2)
+
+        # Test valid chain
+        mock_db = MagicMock()
+        mock_db.query.return_value.order_by.return_value.all.return_value = [e1, e2]
+        res = AuditService.verify_chain(mock_db)
+        self.assertTrue(res["is_valid"])
+        self.assertEqual(res["total_entries_verified"], 2)
+        self.assertEqual(res["status"], "VERIFIED")
+
+        # Test tampered content in entry 2
+        ev2_tampered = dict(ev2)
+        ev2_tampered["cluster"] = "TAMPERED_CLUSTER"
+        e2_bad = MockAuditEntry(2, "ACTION_2", ev2_tampered)
+        mock_db.query.return_value.order_by.return_value.all.return_value = [e1, e2_bad]
+        tamper_res = AuditService.verify_chain(mock_db)
+        self.assertFalse(tamper_res["is_valid"])
+        self.assertEqual(tamper_res["status"], "CONTENT_TAMPERED")
+        self.assertEqual(tamper_res["tampered_entry_id"], 2)
 
 if __name__ == "__main__":
     unittest.main()

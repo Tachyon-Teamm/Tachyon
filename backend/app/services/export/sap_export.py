@@ -66,7 +66,7 @@ class SAPExportService:
             full_desc = (golden.standardized_description if golden else (mat.short_description if mat else ""))
             short_desc = full_desc[:40] if full_desc else ""
             base_uom = (golden.base_uom if golden else (mat.base_uom if mat else "EA")) or "EA"
-            cat_code = (golden.category_code if golden else None) or (mat.category_code if mat else None) or "40141600"
+            cat_code = (golden.category_code if golden else None) or (mat.category_code if mat else None) or "GENERAL"
             pkg_mult = str(mat.package_multiplier if (mat and mat.package_multiplier is not None) else "1.0")
             weight_unit = "KG" if (mat and mat.base_uom == "KG") else "EA"
 

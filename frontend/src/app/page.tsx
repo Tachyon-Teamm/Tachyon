@@ -117,7 +117,7 @@ export default function DashboardPage() {
             Analytics & Collaborative Savings
           </h1>
           <p className="text-xs text-zinc-400 font-normal">
-            Cross-CPSE procurement demand consolidation & price variance arbitration across CPCL, IOCL, and BPCL.
+            Zero-training multi-CPSE demand consolidation across enterprise partners (CPCL, IOCL, BPCL & national CPSEs).
           </p>
         </div>
 
@@ -202,19 +202,15 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-1.5 pt-1">
-            <div className="p-2 rounded-lg bg-zinc-900/60 border border-white/[0.06] text-center">
-              <span className="text-[9px] text-zinc-400 block">CPCL</span>
-              <span className="text-xs font-bold text-white font-mono">{cov.CPCL}%</span>
-            </div>
-            <div className="p-2 rounded-lg bg-zinc-900/60 border border-white/[0.06] text-center">
-              <span className="text-[9px] text-zinc-400 block">IOCL</span>
-              <span className="text-xs font-bold text-white font-mono">{cov.IOCL}%</span>
-            </div>
-            <div className="p-2 rounded-lg bg-zinc-900/60 border border-white/[0.06] text-center">
-              <span className="text-[9px] text-zinc-400 block">BPCL</span>
-              <span className="text-xs font-bold text-white font-mono">{cov.BPCL}%</span>
-            </div>
+          <div className="flex flex-wrap gap-2 pt-1">
+            {Object.entries(cov)
+              .filter(([key]) => key !== "National")
+              .map(([org, pct]: [string, any]) => (
+                <div key={org} className="flex-1 min-w-[75px] p-2.5 rounded-xl bg-zinc-900/60 border border-white/[0.06] text-center">
+                  <span className="text-[10px] text-zinc-400 block font-medium">{org}</span>
+                  <span className="text-sm font-bold text-white font-mono">{pct}%</span>
+                </div>
+              ))}
           </div>
         </div>
 
@@ -338,9 +334,7 @@ export default function DashboardPage() {
               <tr>
                 <th className="py-3 px-4">CNMC Code</th>
                 <th className="py-3 px-4">Standardized Description (ISO 8000)</th>
-                <th className="py-3 px-4 text-right">CPCL Vol</th>
-                <th className="py-3 px-4 text-right">IOCL Vol</th>
-                <th className="py-3 px-4 text-right">BPCL Vol</th>
+                <th className="py-3 px-4 text-right">Enterprise Breakdown</th>
                 <th className="py-3 px-4 text-right">Total Vol</th>
                 <th className="py-3 px-4 text-right">Price Variance</th>
                 <th className="py-3 px-4 text-right text-emerald-400">Est. Savings</th>
@@ -352,9 +346,19 @@ export default function DashboardPage() {
                   <tr key={row.cnmc_code} className="hover:bg-zinc-900/40 transition-colors">
                     <td className="py-3 px-4 font-mono font-semibold text-zinc-200">{row.cnmc_code}</td>
                     <td className="py-3 px-4 font-medium text-zinc-100">{row.material_description}</td>
-                    <td className="py-3 px-4 text-right text-zinc-300 font-mono">{row.cpcl_volume} {row.base_uom}</td>
-                    <td className="py-3 px-4 text-right text-zinc-300 font-mono">{row.iocl_volume} {row.base_uom}</td>
-                    <td className="py-3 px-4 text-right text-zinc-300 font-mono">{row.bpcl_volume} {row.base_uom}</td>
+                    <td className="py-3 px-4 text-right">
+                      <div className="flex flex-wrap justify-end gap-1.5">
+                        {row.organization_volumes && Object.keys(row.organization_volumes).length > 0 ? (
+                          Object.entries(row.organization_volumes).map(([org, vol]) => (
+                            <span key={org} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-zinc-800/80 text-zinc-300 border border-white/[0.06]">
+                              <span className="font-semibold text-white mr-1">{org}:</span> {vol} {row.base_uom}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-zinc-400 font-mono text-xs">{row.total_volume} {row.base_uom}</span>
+                        )}
+                      </div>
+                    </td>
                     <td className="py-3 px-4 text-right font-semibold text-white font-mono">{row.total_volume} {row.base_uom}</td>
                     <td className="py-3 px-4 text-right text-zinc-400 font-mono">
                       ₹{row.min_price?.toLocaleString() || 0} - ₹{row.max_price?.toLocaleString() || 0}
@@ -366,7 +370,7 @@ export default function DashboardPage() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-zinc-500">
+                  <td colSpan={6} className="py-8 text-center text-zinc-500">
                     {searchQuery ? "No matching records found for search query." : "No CNMC crosswalk records minted yet."}
                   </td>
                 </tr>
@@ -391,19 +395,30 @@ export default function DashboardPage() {
               heatmap.map((item) => (
                 <div key={item.field_name} className="p-3 rounded-xl bg-zinc-900/60 border border-white/[0.06]">
                   <div className="text-xs font-medium text-zinc-300 mb-2">{item.field_name}</div>
-                  <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
-                    <div className="bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
-                      <span className="text-zinc-400 block text-[10px] font-medium">CPCL</span>
-                      <span className="text-white font-mono font-semibold">{item.cpcl_pct}%</span>
-                    </div>
-                    <div className="bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
-                      <span className="text-zinc-400 block text-[10px] font-medium">IOCL</span>
-                      <span className="text-white font-mono font-semibold">{item.iocl_pct}%</span>
-                    </div>
-                    <div className="bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
-                      <span className="text-zinc-400 block text-[10px] font-medium">BPCL</span>
-                      <span className="text-white font-mono font-semibold">{item.bpcl_pct}%</span>
-                    </div>
+                  <div className="flex flex-wrap gap-2 text-center text-[11px]">
+                    {item.cpse_scores && Object.keys(item.cpse_scores).length > 0 ? (
+                      Object.entries(item.cpse_scores).map(([org, pct]: [string, any]) => (
+                        <div key={org} className="flex-1 min-w-[60px] bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
+                          <span className="text-zinc-400 block text-[10px] font-medium">{org}</span>
+                          <span className="text-white font-mono font-semibold">{pct}%</span>
+                        </div>
+                      ))
+                    ) : (
+                      <>
+                        <div className="flex-1 bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
+                          <span className="text-zinc-400 block text-[10px] font-medium">CPCL</span>
+                          <span className="text-white font-mono font-semibold">{item.cpcl_pct || 0}%</span>
+                        </div>
+                        <div className="flex-1 bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
+                          <span className="text-zinc-400 block text-[10px] font-medium">IOCL</span>
+                          <span className="text-white font-mono font-semibold">{item.iocl_pct || 0}%</span>
+                        </div>
+                        <div className="flex-1 bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
+                          <span className="text-zinc-400 block text-[10px] font-medium">BPCL</span>
+                          <span className="text-white font-mono font-semibold">{item.bpcl_pct || 0}%</span>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               ))
@@ -426,24 +441,35 @@ export default function DashboardPage() {
           <div className="p-5 bg-zinc-900/70 rounded-xl border border-white/[0.06] text-center space-y-3">
             <div>
               <span className="text-2xl font-bold tracking-tight text-white font-mono block">
-                {venn ? (venn.all_three || 0).toLocaleString() : 0}
+                {venn ? (venn.multi_cpse_clusters || venn.all_three || 0).toLocaleString() : 0}
               </span>
-              <span className="text-xs text-zinc-300 font-medium">Common to All 3 CPSEs</span>
+              <span className="text-xs text-zinc-300 font-medium">Multi-CPSE Harmonized Clusters</span>
             </div>
 
-            <div className="pt-3 border-t border-white/[0.06] grid grid-cols-3 gap-2 text-[11px]">
-              <div className="p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
-                <span className="text-zinc-400 block text-[10px]">CPCL & IOCL</span>
-                <span className="font-mono font-bold text-white">{venn ? (venn.cpcl_iocl || 0).toLocaleString() : 0}</span>
-              </div>
-              <div className="p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
-                <span className="text-zinc-400 block text-[10px]">IOCL & BPCL</span>
-                <span className="font-mono font-bold text-white">{venn ? (venn.iocl_bpcl || 0).toLocaleString() : 0}</span>
-              </div>
-              <div className="p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
-                <span className="text-zinc-400 block text-[10px]">CPCL & BPCL</span>
-                <span className="font-mono font-bold text-white">{venn ? (venn.cpcl_bpcl || 0).toLocaleString() : 0}</span>
-              </div>
+            <div className="pt-3 border-t border-white/[0.06] flex flex-wrap gap-2 text-[11px]">
+              {venn?.pairwise_overlap && Object.keys(venn.pairwise_overlap).length > 0 ? (
+                Object.entries(venn.pairwise_overlap).slice(0, 3).map(([pair, count]: [string, any]) => (
+                  <div key={pair} className="flex-1 min-w-[80px] p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
+                    <span className="text-zinc-400 block text-[10px] truncate">{pair.replace("_", " & ")}</span>
+                    <span className="font-mono font-bold text-white">{count}</span>
+                  </div>
+                ))
+              ) : (
+                <>
+                  <div className="flex-1 p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
+                    <span className="text-zinc-400 block text-[10px]">CPCL & IOCL</span>
+                    <span className="font-mono font-bold text-white">{venn ? (venn.cpcl_iocl || 0).toLocaleString() : 0}</span>
+                  </div>
+                  <div className="flex-1 p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
+                    <span className="text-zinc-400 block text-[10px]">IOCL & BPCL</span>
+                    <span className="font-mono font-bold text-white">{venn ? (venn.iocl_bpcl || 0).toLocaleString() : 0}</span>
+                  </div>
+                  <div className="flex-1 p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
+                    <span className="text-zinc-400 block text-[10px]">CPCL & BPCL</span>
+                    <span className="font-mono font-bold text-white">{venn ? (venn.cpcl_bpcl || 0).toLocaleString() : 0}</span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 

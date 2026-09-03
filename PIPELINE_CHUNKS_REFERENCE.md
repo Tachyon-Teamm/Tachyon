@@ -261,47 +261,60 @@ pytest backend/tests/test_uom_normalizer.py -v
 
 ---
 
-### <a id="chunk-5-vector-encoding"></a>🧩 Chunk 5: Vector Encoding
+### <a id="chunk-5-vector-encoding"></a>🧩 Chunk 5: Vector Encoding & Neural Embeddings
 
 #### 1. Summary
-Each normalized material description is transformed into a dense 384-dimensional vector embedding using the pre-trained `all-MiniLM-L6-v2` Sentence-Transformer model. The vectors are stored in PostgreSQL using the `pgvector` extension for semantic indexing.
+Each normalized material description is transformed into a dense vector embedding using `BAAI/bge-base-en-v1.5` (768-dimensional) or the lightweight fallback `all-MiniLM-L6-v2` (384-dimensional). The dense representation is paired with learned sparse BM25 vectors for exact keyword matching, and borderline candidate clusters can be scored via a neural Cross-Encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`). The dense vectors are stored in PostgreSQL using the `pgvector` extension for semantic HNSW indexing.
 
 #### 2. Service Layer
 - **File:** [`backend/app/services/matching/embeddings.py`](file:///Users/rupesh/Documents/Arc-1/backend/app/services/matching/embeddings.py)
-- **Model:** `sentence-transformers/all-MiniLM-L6-v2` (Zero-training, pre-trained weights)
-- **Method:** `EmbeddingService.generate_embedding(text: str) -> List[float]`
+- **Primary Model:** `BAAI/bge-base-en-v1.5` (768-dim, top-tier MTEB retrieval performance)
+- **Fallback Model:** `sentence-transformers/all-MiniLM-L6-v2` (384-dim, lightweight edge deployment)
+- **Neural Reranker:** `cross-encoder/ms-marco-MiniLM-L-6-v2` (deep bidirectional pair cross-attention)
+- **Sparse Encoder:** `rank_bm25.BM25Okapi` (exact keyword and OEM part number preservation)
+- **Hardware Acceleration:** Auto-detected via `get_inference_device()`: Apple Silicon MPS (`mps`), NVIDIA CUDA (`cuda`), or CPU fallback (`cpu`).
+- **Methods:**
+  - `EmbeddingService.generate_embedding(text: str) -> List[float]`
+  - `EmbeddingService.generate_sparse_vector(text: str) -> Dict[str, float]`
+  - `EmbeddingService.rerank_pair(desc_a: str, desc_b: str) -> float`
 
 #### 3. Under-the-Hood Logic
-- Cleans and formats the text representation.
-- Passes string to `SentenceTransformer.encode(text, convert_to_numpy=True)`.
-- Normalizes vector to unit length ($L_2$ norm) so that cosine similarity can be computed via inner product.
+- Builds high-signal canonical text using `EmbeddingService.build_canonical_text(specs, raw_desc)`.
+- Passes canonical string to `SentenceTransformer.encode(text, convert_to_numpy=True)`.
+- Normalizes dense vector to unit length ($L_2$ norm) so that cosine similarity can be computed via inner product.
+- Tokenizes words with engineering punctuation preservation to generate learned BM25 sparse keyword representations.
 
 #### 4. Database Tables Touched
-- **`material_embeddings`** ([`backend/app/models/models.py:L150-L159`](file:///Users/rupesh/Documents/Arc-1/backend/app/models/models.py#L150-L159)):
-  - Column: `embedding: Vector(384)` (pgvector column type).
+- **`material_embeddings`** ([`backend/app/models/models.py:L150-L165`](file:///Users/rupesh/Documents/Arc-1/backend/app/models/models.py#L150-L165)):
+  - Column: `embedding: Vector(768)` or `Vector(384)` (pgvector column type).
+  - Column: `sparse_vector: JSON` (learned sparse dictionary representations).
+  - Column: `model_name: String` (records exact model used, e.g. `BAAI/bge-base-en-v1.5`).
   - Foreign key: `material_id -> materials.id`.
 
 #### 5. Data Transformation Example
 ```
-Input Text:    "VALVE, GATE, 6 INCH (150 MM), CLASS 300#, ASTM A216 WCB"
-Output Vector: [0.0312, -0.0541, 0.0892, 0.0118, ..., -0.0245]  (384 float32 dimensions)
+Input Specs:   {"item_noun": "VALVE, GATE", "nominal_size": "6 INCH (150 MM)", "pressure_class": "CLASS 300#", "moc": "ASTM A216 WCB"}
+Canonical Text: "VALVE, GATE, 6 INCH (150 MM), CLASS 300#, ASTM A216 WCB"
+Output Vector: [0.0312, -0.0541, 0.0892, 0.0118, ..., -0.0245]  (768 float32 dimensions)
+Sparse Tokens: {"valve": 0.42, "gate": 0.51, "6in": 0.88, "300#": 0.94, "wcb": 0.92}
 ```
 
 #### 6. Audit Checklist & Known Issues
-- 🚨 **1-by-1 Generation:** Calling `generate_embedding()` iteratively inside a `for raw in raw_records` loop is a major CPU bottleneck. Vectorizing in batches of 64 sentences is 5x–10x faster.
+- 🚨 **Hardware Acceleration:** Ensure `mps` (macOS Apple Silicon) or `cuda` (Linux GPU) is active for sub-5ms inference.
 - ⚠️ Ensure PostgreSQL has the `vector` extension enabled (`CREATE EXTENSION IF NOT EXISTS vector;`).
+- ⚠️ Dimension alignment: Database vector column and model embedding dimension must match (`768` for BGE, `384` for MiniLM).
 
 #### 7. How to Test in Isolation
 ```python
 # In python terminal:
 from app.services.matching.embeddings import EmbeddingService
 v = EmbeddingService.generate_embedding("VALVE GATE 6IN 300#")
-assert len(v) == 384
+assert len(v) in (384, 768)
 ```
 
 #### 8. Handoff Contract
-- **Input from Chunk 4:** Standardized `short_description` on `Material`.
-- **Output to Chunk 6:** Persisted 384-d vector in `material_embeddings` table.
+- **Input from Chunk 4:** Standardized `short_description` and `extracted_attributes` on `Material`.
+- **Output to Chunk 6:** Persisted dense + sparse vectors in `material_embeddings` table.
 
 ---
 
@@ -400,25 +413,32 @@ pytest backend/tests/test_scorer.py -v
 
 ---
 
-### <a id="chunk-8-governance-review"></a>🧩 Chunk 8: Governance Review
+### <a id="chunk-8-governance-review"></a>🧩 Chunk 8: Governance Review & Cryptographic Audit
 
 #### 1. Summary
-A human procurement officer or data steward opens the **Governance Review Queue** (`/review`). They inspect the side-by-side **3-Way Multi-CPSE Cluster Card** (CPCL vs IOCL vs BPCL), check score math, inspect safety badges, and click **"Approve as Identical"** or **"Approve as Substitute"**. The backend synthesizes an ISO 8000 description, atomically mints a **Verhoeff-checksummed National Code (`CNMC-XXXXXXXX-C`)**, writes N:1 crosswalk links, and logs an HMAC-SHA256 chained audit record.
+A human procurement officer or data steward opens the **Governance Review Queue** (`/review`). They inspect multi-CPSE candidate clusters across 4 status tabs (`PENDING`, `DISPUTED`, `APPROVED`, `REJECTED`), check score math, inspect safety badges, and record one of the **7 Approved Relationships** (`IDENTICAL`, `FUNCTIONAL_EQUIVALENT`, `BRAND_ALTERNATIVE`, `KIT_COMPONENT`, `PACKAGING_VARIANT`, `SUPERSEDED`, `SUBSTITUTE`) or raise a multi-CPSE dispute. The backend synthesizes an ISO 8000 description, atomically mints a **Verhoeff-checksummed National Code (`CNMC-XXXXXXXX-C`)**, writes N:1 crosswalk links, appends an HMAC-SHA256 chained audit record, and persists training telemetry in `review_feedback`.
 
 #### 2. Frontend Layer
 - **Component File:** [`frontend/src/app/review/page.tsx`](file:///Users/rupesh/Documents/Arc-1/frontend/src/app/review/page.tsx)
-- **Functions:** `loadQueue()`, `loadClusterDetails(clusterId)`, `handleAction(decisionType)`
-- **UI Elements:** 3-way side-by-side cards, score breakdown modal, ISO 8000 editable input, Action buttons (`Approve as Identical`, `Substitute`, `Split`, `Dispute`).
-- **API Call:** `api.executeReviewAction(...)` in [`frontend/src/lib/api.ts:L77-L87`](file:///Users/rupesh/Documents/Arc-1/frontend/src/lib/api.ts#L77-L87)
+- **Functions:** `loadQueue()`, `loadClusterDetails(clusterId)`, `handleAction(decisionType)`, `handleDisputeSubmit()`
+- **UI Elements:** Status filter tabs (`PENDING`, `DISPUTED`, `APPROVED`, `REJECTED`), multi-CPSE comparison cards, score breakdown modal, ISO 8000 editable input, 7-relationship action selectors, In-App Dispute Arbitration Modal.
+- **API Calls:**
+  - `api.executeReviewAction(...)` in [`frontend/src/lib/api.ts`](file:///Users/rupesh/Documents/Arc-1/frontend/src/lib/api.ts)
+  - `api.raiseDispute(...)` in [`frontend/src/lib/api.ts`](file:///Users/rupesh/Documents/Arc-1/frontend/src/lib/api.ts)
 
 #### 3. Backend API & Governance Services
-- **Endpoint:** `POST /api/v1/review/action`
-- **Controller File:** [`backend/app/api/v1/review.py:L181-L255`](file:///Users/rupesh/Documents/Arc-1/backend/app/api/v1/review.py#L181-L255)
+- **Action Endpoint:** `POST /api/v1/review/action`
+- **Dispute Endpoint:** `POST /api/v1/review/dispute`
+- **Feedback Export:** `GET /api/v1/review/feedback/export`
+- **Audit Endpoints:** `GET /api/v1/audit/logs`, `GET /api/v1/audit/verify-chain`
+- **Controller Files:**
+  - [`backend/app/api/v1/review.py`](file:///Users/rupesh/Documents/Arc-1/backend/app/api/v1/review.py)
+  - [`backend/app/api/v1/audit.py`](file:///Users/rupesh/Documents/Arc-1/backend/app/api/v1/audit.py)
 - **Services Involved:**
   - **ISO 8000 Synthesizer:** [`GoldenRecordService`](file:///Users/rupesh/Documents/Arc-1/backend/app/services/governance/golden_record_service.py)
   - **National Code Minter:** [`CNMCMinter`](file:///Users/rupesh/Documents/Arc-1/backend/app/services/governance/cnmc_minter.py) (implements Verhoeff Checksum Algorithm)
   - **Crosswalk Hub:** [`CrosswalkService`](file:///Users/rupesh/Documents/Arc-1/backend/app/services/governance/crosswalk_service.py)
-  - **Audit Service:** [`AuditService`](file:///Users/rupesh/Documents/Arc-1/backend/app/services/governance/audit_service.py) (HMAC-SHA256 cryptographic chaining)
+  - **Audit Service:** [`AuditService`](file:///Users/rupesh/Documents/Arc-1/backend/app/services/governance/audit_service.py) (HMAC-SHA256 cryptographic chaining & verification)
 
 #### 4. Database Tables Touched
 1. **`golden_records`** ([`backend/app/models/models.py:L268-L295`](file:///Users/rupesh/Documents/Arc-1/backend/app/models/models.py#L268-L295)):
@@ -427,28 +447,34 @@ A human procurement officer or data steward opens the **Governance Review Queue*
    - Inserts authoritative code: e.g. `code = "CNMC-00000001-7"`, `golden_record_id`, `status="ACTIVE"`.
 3. **`crosswalks`** ([`backend/app/models/models.py:L297-L321`](file:///Users/rupesh/Documents/Arc-1/backend/app/models/models.py#L297-L321)):
    - Writes N:1 mapping rows linking each local CPSE material ID to the new `cnmc_code_id`.
-4. **`audit_logs`** ([`backend/app/models/models.py:L323-L345`](file:///Users/rupesh/Documents/Arc-1/backend/app/models/models.py#L323-L345)):
+4. **`review_feedback`** ([`backend/app/models/models.py:L361-L380`](file:///Users/rupesh/Documents/Arc-1/backend/app/models/models.py#L361-L380)):
+   - Stores labeled human decisions, feature vectors, and reviewer notes for active learning model calibration.
+5. **`audit_logs`** ([`backend/app/models/models.py:L323-L345`](file:///Users/rupesh/Documents/Arc-1/backend/app/models/models.py#L323-L345)):
    - Appends immutable audit entry with `signature` and `prev_signature`.
-5. **`review_queue`**:
-   - Updates: `status = "APPROVED"`, `decision_type = "IDENTICAL"`.
+6. **`review_queue`**:
+   - Updates: `status = "APPROVED"`, `decision_type = "IDENTICAL"`, or `status = "DISPUTED"`.
 
 #### 5. Data Transformation Example
 ```
 Action:      User approves cluster with CPCL (100234), IOCL (889102), BPCL (445511)
+Decision:    IDENTICAL (or FUNCTIONAL_EQUIVALENT, BRAND_ALTERNATIVE, etc.)
 ISO 8000:    "VALVE, GATE, 6 INCH (150 MM), CLASS 300#, FLANGED RF, ASTM A216 WCB"
 Minted Code: "CNMC-00000001-7" (Last digit '7' is the Verhoeff checksum)
 Crosswalk:   CPCL:100234 -> CNMC-00000001-7
              IOCL:889102 -> CNMC-00000001-7
              BPCL:445511 -> CNMC-00000001-7
+Feedback:    Saved pair telemetry vector to ReviewFeedback
 ```
 
 #### 6. Audit Checklist & Known Issues
 - ⚠️ Verify Verhoeff Checksum: Code format must be `CNMC-XXXXXXXX-C`. Single-digit typos or transpositions must be rejected.
-- ⚠️ Verify Audit Chain: Check that `audit_logs.prev_signature` matches the hash of the preceding record.
+- ⚠️ Verify Audit Chain: Run `GET /api/v1/audit/verify-chain` to ensure chain continuity and zero tampering across all entries.
+- ⚠️ Bulk Approval Invariant: Ensure candidates with `safety_veto == True` are skipped during bulk operations.
 
 #### 7. How to Test in Isolation
 ```bash
 pytest backend/tests/test_audit_precision_upgrades.py -v
+pytest backend/tests/test_chunk8_governance.py -v
 ```
 
 #### 8. Handoff Contract
@@ -457,16 +483,21 @@ pytest backend/tests/test_audit_precision_upgrades.py -v
 
 ---
 
-### <a id="chunk-9-search--lookup"></a>🧩 Chunk 9: Search & Lookup
+### <a id="chunk-9-search--lookup"></a>🧩 Chunk 9: Search, Lookup & ERP Syndication
 
 #### 1. Summary
-End users (plant engineers, procurement officers) and external ERP systems (SAP S/4HANA, GeM) query the platform. Entering a legacy local material code instantly resolves the authoritative National CNMC code, the ISO 8000 description, and sister refinery part numbers. Users can also export mass SAP LSMW/LTMC migration CSVs.
+End users (plant engineers, procurement officers) and external enterprise systems (SAP S/4HANA, GeM) query the platform. The Crosswalk Hub loads the complete National Crosswalk Registry on mount, provides spotlight search by local ERP code, and exposes instant one-click enterprise syndication: **Syndicate to GeM**, **Export SAP MATMAS05 IDoc**, and **Verify Cryptographic Audit Chain**.
 
 #### 2. Frontend Layer
 - **Component File:** [`frontend/src/app/crosswalk/page.tsx`](file:///Users/rupesh/Documents/Arc-1/frontend/src/app/crosswalk/page.tsx)
-- **Functions:** `handleSearch()`, `handleExportCSV()`
-- **UI Elements:** Spotlight search input, refinery filter dropdown, National Crosswalk Authority Card, sister mapping pills, "Export SAP LSMW CSV" button.
-- **API Calls:** `api.reverseLookup(localCode, cpseCode)` in [`frontend/src/lib/api.ts:L90-L95`](file:///Users/rupesh/Documents/Arc-1/frontend/src/lib/api.ts#L90-L95)
+- **Functions:** `loadRegistry()`, `handleSearch()`, `handleSyncGeM()`, `handleExportIDoc()`, `handleVerifyAudit()`
+- **UI Elements:** National Master Registry Table, Spotlight search input, refinery filter, GeM syndicate button, SAP IDoc export button, Verify Audit Chain badge.
+- **API Calls:**
+  - `api.getCrosswalkRegistry()`
+  - `api.reverseLookup(localCode, cpseCode)`
+  - `api.syncGeMCatalog(cnmcCode)`
+  - `api.exportSapIDoc(cnmcCode)`
+  - `api.verifyAuditChain()`
 
 #### 3. Backend API & Export Services
 - **Lookup Endpoint:** `GET /api/v1/crosswalk/lookup?local_code={code}`
