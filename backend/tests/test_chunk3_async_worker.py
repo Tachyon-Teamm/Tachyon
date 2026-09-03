@@ -3,11 +3,16 @@ import pytest
 from app.tasks.celery_app import celery_app
 from app.core.database import get_sync_db
 from app.models.models import IngestionBatch, RawMaterial, Material, CPSE
-from app.tasks.ingestion_tasks import process_ingestion_batch_task, mock_heavy_task
+from app.tasks.ingestion_tasks import process_ingestion_batch_task
+
+@celery_app.task(name="test_worker_task")
+def _test_worker_task(duration: float):
+    time.sleep(duration)
+    return "COMPLETED"
 
 def test_chunk3_async_worker_non_blocking():
     t0 = time.time()
-    future = mock_heavy_task.delay(0.2)
+    future = _test_worker_task.delay(0.2)
     elapsed = time.time() - t0
     
     # Assert non-blocking HTTP dispatch (< 50ms)

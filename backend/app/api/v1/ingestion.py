@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.core.database import get_db
 from app.core.security import get_current_user, TokenData
 from app.models.models import IngestionBatch, RawMaterial, CPSE, ColumnMapping
-from app.schemas.schemas import ColumnMappingDetectResponse, IngestionBatchResponse, BatchProgressResponse
+from app.schemas.schemas import ColumnMappingDetectResponse, IngestionBatchResponse, BatchProgressResponse, CPSEResponse
 from app.services.normalization.uom_normalizer import UOMNormalizer
 from app.services.normalization.spec_extractor import SpecExtractor
 from app.tasks.ingestion_tasks import process_ingestion_batch_task
@@ -19,6 +19,12 @@ from app.core.config import settings
 from app.services.normalization.data_profiler import DataProfiler
 
 router = APIRouter(prefix="/ingestion", tags=["Ingestion & Normalization"])
+
+@router.get("/cpses", response_model=List[CPSEResponse])
+async def list_cpses(db: Session = Depends(get_db)):
+    """Dynamically return all active CPSEs with sectors for entity selection."""
+    res = await db.execute(select(CPSE).filter(CPSE.is_active == True).order_by(CPSE.sector.asc(), CPSE.code.asc()))
+    return res.scalars().all()
 
 UPLOAD_STAGING_DIR = os.path.join(os.getcwd(), "temp_uploads")
 os.makedirs(UPLOAD_STAGING_DIR, exist_ok=True)

@@ -1,8 +1,7 @@
 from typing import List, Optional
 from fastapi import APIRouter, Query, HTTPException
-from sqlalchemy.orm import Session
 from app.core.database import get_sync_session
-from app.models.models import CNMCCode, Crosswalk, GoldenRecord, Material, CPSE
+from app.models.models import CNMCCode, GoldenRecord
 from app.schemas.schemas import CNMCDetailResponse, ReverseLookupResponse
 from app.services.governance.crosswalk_service import CrosswalkService
 

@@ -1,47 +1,78 @@
-from typing import List, Optional
+from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import select, or_, and_
+from sqlalchemy import select, or_, and_, func
 from app.core.database import get_db
 from app.models.models import Material, CPSE, ProcurementHistory
-from app.schemas.schemas import MaterialResponse
+from app.schemas.schemas import MaterialResponse, PaginatedMaterialResponse, CPSEResponse
 
 router = APIRouter(prefix="/materials", tags=["Materials Master"])
 
-@router.get("", response_model=List[MaterialResponse])
+@router.get("/refineries/list", response_model=List[CPSEResponse])
+async def list_refineries(db: Session = Depends(get_db)):
+    """Fetch all active CPSEs / refineries dynamically for catalog filtering."""
+    res = await db.execute(select(CPSE).filter(CPSE.is_active == True).order_by(CPSE.code.asc()))
+    return res.scalars().all()
+
+@router.get("", response_model=Union[PaginatedMaterialResponse, List[MaterialResponse]])
 async def get_materials(
-    cpse_code: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
-    item_noun: Optional[str] = Query(None),
-    limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    cpse_code: Optional[str] = Query(None, description="Filter by CPSE code (e.g. CPCL, IOCL, BPCL)"),
+    search: Optional[str] = Query(None, description="Multi-attribute search across code, description, noun, specs, and part no"),
+    item_noun: Optional[str] = Query(None, description="Direct filter by extracted item noun"),
+    page: Optional[int] = Query(None, ge=1, description="1-based page number"),
+    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
+    limit: Optional[int] = Query(None, ge=1, le=500, description="Legacy limit override"),
+    offset: Optional[int] = Query(None, ge=0, description="Legacy offset override"),
     db: Session = Depends(get_db)
 ):
+    # Support legacy limit/offset overrides while defaulting to clean page/page_size
+    effective_limit = limit if limit is not None else page_size
+    effective_offset = offset if offset is not None else (page - 1) * effective_limit
+    effective_page = (effective_offset // effective_limit) + 1 if effective_limit > 0 else 1
+
+    # Base search filter clauses
+    search_filters = []
+    if search and search.strip():
+        s = f"%{search.strip()}%"
+        search_filters.append(
+            or_(
+                Material.material_code.ilike(s),
+                Material.short_description.ilike(s),
+                Material.clean_part_number.ilike(s),
+                Material.item_noun.ilike(s),
+                Material.moc.ilike(s),
+                Material.schedule.ilike(s),
+                Material.standard_spec.ilike(s),
+                Material.nominal_size.ilike(s),
+            )
+        )
+    if item_noun and item_noun.strip():
+        search_filters.append(Material.item_noun.ilike(f"%{item_noun.strip()}%"))
+
+    # 1. Total Count Query (single lightweight query with matching filters)
+    count_query = select(func.count(Material.id))
+    if cpse_code and cpse_code.strip():
+        count_query = count_query.join(Material.cpse).filter(CPSE.code == cpse_code.strip().upper())
+    for flt in search_filters:
+        count_query = count_query.filter(flt)
+
+    total_res = await db.execute(count_query)
+    total = total_res.scalar() or 0
+
+    # 2. Main Data Query with Eager Joined Loading (Eliminates N+1 query loops)
     query = select(Material).options(
         joinedload(Material.cpse),
         joinedload(Material.procurement_records)
     )
-    
-    if cpse_code:
-        query = query.join(Material.cpse).filter(CPSE.code == cpse_code.upper())
-            
-    if search:
-        s = f"%{search.strip()}%"
-        query = query.filter(
-            or_(
-                Material.material_code.ilike(s),
-                Material.short_description.ilike(s),
-                Material.clean_part_number.ilike(s)
-            )
-        )
-        
-    if item_noun:
-        query = query.filter(Material.item_noun.ilike(f"%{item_noun}%"))
-        
-    query = query.order_by(Material.id.desc()).offset(offset).limit(limit)
+    if cpse_code and cpse_code.strip():
+        query = query.join(Material.cpse).filter(CPSE.code == cpse_code.strip().upper())
+    for flt in search_filters:
+        query = query.filter(flt)
+
+    query = query.order_by(Material.id.desc()).offset(effective_offset).limit(effective_limit)
     res = await db.execute(query)
     materials = res.scalars().unique().all()
-    
+
     out = []
     for m in materials:
         cpse = m.cpse
@@ -71,19 +102,36 @@ async def get_materials(
             vendor_name=proc.vendor_name if proc else None,
             created_at=m.created_at
         ))
+
+    total_pages = (total + effective_limit - 1) // effective_limit if total > 0 else 1
+
+    if page is not None or limit is None:
+        return PaginatedMaterialResponse(
+            items=out,
+            total=total,
+            page=effective_page,
+            page_size=effective_limit,
+            total_pages=total_pages
+        )
     return out
 
 @router.get("/{material_id}", response_model=MaterialResponse)
 async def get_material_detail(material_id: int, db: Session = Depends(get_db)):
-    res = await db.execute(select(Material).filter(Material.id == material_id))
-    m = res.scalars().first()
+    """Fetch single material record with single-query eager joined relationships."""
+    res = await db.execute(
+        select(Material)
+        .options(
+            joinedload(Material.cpse),
+            joinedload(Material.procurement_records)
+        )
+        .filter(Material.id == material_id)
+    )
+    m = res.scalars().unique().first()
     if not m:
         raise HTTPException(status_code=404, detail="Material not found")
         
-    cpse_res = await db.execute(select(CPSE).filter(CPSE.id == m.cpse_id))
-    cpse = cpse_res.scalars().first()
-    proc_res = await db.execute(select(ProcurementHistory).filter(ProcurementHistory.material_id == m.id))
-    proc = proc_res.scalars().first()
+    cpse = m.cpse
+    proc = m.procurement_records[0] if (m.procurement_records and len(m.procurement_records) > 0) else None
     
     return MaterialResponse(
         id=m.id,

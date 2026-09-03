@@ -30,12 +30,6 @@ def sanitize_price(raw_val: Any) -> float:
     except (ValueError, TypeError):
         return 0.0
 
-@celery_app.task(name="mock_heavy_task")
-def mock_heavy_task(duration: float):
-    import time
-    time.sleep(duration)
-    return "COMPLETED"
-
 @celery_app.task(name="process_ingestion_batch_task")
 def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
     db = next(get_sync_db())
@@ -116,14 +110,37 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
             # 2. Vectorize the entire mini-batch simultaneously (PyTorch SIMD Tensor Acceleration)
             batch_vectors = EmbeddingService.generate_batch_embeddings(batch_descriptions)
 
-            # 3. Persist Silver, Gold, Vector, and Procurement entities with row-level bulkhead isolation
+            # 3. Pre-fetch existing entities for the mini-batch in bulk (eliminates N+1 queries)
+            raw_ids_in_chunk = [it["raw"].id for it in batch_items]
+            mat_codes_in_chunk = [it["mat_code"] for it in batch_items]
+
+            existing_norms = {
+                nm.raw_material_id: nm
+                for nm in db.query(NormalizedMaterial).filter(NormalizedMaterial.raw_material_id.in_(raw_ids_in_chunk)).all()
+            }
+            existing_mats = {
+                m.material_code: m
+                for m in db.query(Material).filter(
+                    Material.cpse_id == batch.cpse_id,
+                    Material.material_code.in_(mat_codes_in_chunk)
+                ).all()
+            }
+            existing_mat_ids = [m.id for m in existing_mats.values()]
+            existing_embs = {
+                me.material_id: me
+                for me in db.query(MaterialEmbedding).filter(MaterialEmbedding.material_id.in_(existing_mat_ids)).all()
+            }
+            existing_procs = {
+                p.material_id: p
+                for p in db.query(ProcurementHistory).filter(ProcurementHistory.material_id.in_(existing_mat_ids)).all()
+            }
+
+            # 4. Persist Silver, Gold, Vector, and Procurement entities with row-level bulkhead isolation
             for i, item in enumerate(batch_items):
                 raw = item["raw"]
                 try:
                     # Silver Layer
-                    norm_mat = db.query(NormalizedMaterial).filter(
-                        NormalizedMaterial.raw_material_id == raw.id
-                    ).first()
+                    norm_mat = existing_norms.get(raw.id)
                     if not norm_mat:
                         norm_mat = NormalizedMaterial(
                             raw_material_id=raw.id,
@@ -140,10 +157,7 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                         db.add(norm_mat)
 
                     # Active Material (Gold)
-                    mat = db.query(Material).filter(
-                        Material.cpse_id == batch.cpse_id,
-                        Material.material_code == item["mat_code"]
-                    ).first()
+                    mat = existing_mats.get(item["mat_code"])
 
                     if not mat:
                         mat = Material(
@@ -171,6 +185,7 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                         )
                         db.add(mat)
                         db.flush()
+                        existing_mats[item["mat_code"]] = mat
                     else:
                         mat.technical_attributes = item["tech_attrs"]
                         mat.extracted_attributes = item["specs"]
@@ -178,20 +193,21 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                     # Vector Embedding (Bulkhead Protected)
                     try:
                         emb_vector = batch_vectors[i] if i < len(batch_vectors) else EmbeddingService.generate_embedding(item["canonical_text"])
-                        mat_emb = db.query(MaterialEmbedding).filter(MaterialEmbedding.material_id == mat.id).first()
+                        mat_emb = existing_embs.get(mat.id)
                         if not mat_emb:
                             mat_emb = MaterialEmbedding(
                                 material_id=mat.id,
                                 embedding=emb_vector
                             )
                             db.add(mat_emb)
+                            existing_embs[mat.id] = mat_emb
                         else:
                             mat_emb.embedding = emb_vector
                     except Exception as emb_err:
                         print(f"[Ingestion] Note: Embedding persistence skipped for mat {mat.id}: {emb_err}")
 
                     # Procurement History
-                    proc = db.query(ProcurementHistory).filter(ProcurementHistory.material_id == mat.id).first()
+                    proc = existing_procs.get(mat.id)
                     if not proc:
                         proc = ProcurementHistory(
                             material_id=mat.id,
@@ -204,6 +220,7 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                             total_spend=item["raw_price"]
                         )
                         db.add(proc)
+                        existing_procs[mat.id] = proc
 
                     processed += 1
 

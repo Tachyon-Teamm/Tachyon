@@ -15,11 +15,6 @@ async def login(credentials: UserLogin, db: Session = Depends(get_db)):
     user_obj = user.scalars().first()
     
     if not user_obj:
-        # If default admin credentials provided during initial setup
-        if credentials.username in ["admin", "steward", "reviewer"] and credentials.password in ["admin123", "password"]:
-            role = "admin" if credentials.username == "admin" else ("data_steward" if credentials.username == "steward" else "reviewer")
-            token = create_access_token({"sub": credentials.username, "role": role, "cpse_id": 1})
-            return Token(access_token=token, token_type="bearer", role=role, username=credentials.username, cpse_code="IOCL")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password"
