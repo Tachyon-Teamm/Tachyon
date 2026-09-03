@@ -16,6 +16,7 @@ from app.services.matching.blocking_engine import BlockingEngine
 from app.services.matching.cluster_engine import ClusterEngine
 from app.services.governance.golden_record_service import GoldenRecordService
 from app.services.governance.cnmc_minter import CNMCMinter, validate_verhoeff
+from app.services.matching.embeddings import EmbeddingService
 from app.tasks.active_learning import ActiveLearningPipeline
 
 class TestUniMMCore(unittest.TestCase):
@@ -212,6 +213,181 @@ class TestUniMMCore(unittest.TestCase):
         self.assertIn("6 INCH (150 MM)", synth["standardized_description"])
         self.assertIn("CLASS 300#", synth["standardized_description"])
         self.assertIn("ASTM A216 WCB", synth["standardized_description"])
+
+    def test_chunk2_two_pass_synonym_mapping(self):
+        from app.api.v1.ingestion import STANDARD_HEADER_SYNONYMS
+        import re
+
+        test_columns = [
+            ("MATERIAL_NO", "material_code"),
+            ("MATNR", "material_code"),
+            ("MATERIAL_NUMBER", "material_code"),
+            ("ITEM_SPEC", "short_description"),
+            ("MAKTX", "short_description"),
+            ("SHORT_TEXT", "short_description"),
+            ("UNIT_OF_MEASURE", "uom"),
+            ("MEINS", "uom"),
+            ("PURCHASE_ORDER_UNIT", "uom"),
+            ("LAST_PO_PRICE", "base_price"),
+            ("NETPR", "base_price"),
+            ("UNIT_PRICE", "base_price"),  # Must map to base_price, NOT uom
+            ("VENDOR_NAME", "vendor_name"),
+            ("NAME1", "vendor_name"),
+            ("HSN_CODE", "hsn_code"),      # Must map to hsn_code, NOT material_code
+            ("SAC_CODE", "hsn_code"),
+            ("TAX_CODE", "hsn_code"),
+        ]
+
+        columns = [c[0] for c in test_columns]
+        suggested = {}
+
+        # Pass 1: Strict Exact Match
+        for col in columns:
+            col_clean = re.sub(r'[^A-Z0-9]', '_', str(col).strip().upper())
+            col_clean = re.sub(r'_+', '_', col_clean).strip('_')
+            matched = False
+            for target_field, synonyms in STANDARD_HEADER_SYNONYMS.items():
+                for syn in synonyms:
+                    syn_clean = re.sub(r'[^A-Z0-9]', '_', syn.upper()).strip('_')
+                    if col_clean == syn_clean or str(col).strip().upper() == syn:
+                        suggested[col] = target_field
+                        matched = True
+                        break
+                if matched:
+                    break
+
+        # Pass 2: Word-Boundary Regex
+        category_order = ["hsn_code", "base_price", "vendor_name", "short_description", "uom", "material_code"]
+        for col in columns:
+            if col in suggested:
+                continue
+            col_upper = str(col).strip().upper()
+            matched = False
+            for target_field in category_order:
+                synonyms = STANDARD_HEADER_SYNONYMS[target_field]
+                for syn in synonyms:
+                    pattern = r'\b' + re.escape(syn.upper()) + r'\b'
+                    if re.search(pattern, col_upper):
+                        suggested[col] = target_field
+                        matched = True
+                        break
+                if matched:
+                    break
+
+        for col_name, expected_target in test_columns:
+            self.assertEqual(
+                suggested.get(col_name), 
+                expected_target, 
+                f"Column '{col_name}' was mapped to '{suggested.get(col_name)}', expected '{expected_target}'"
+            )
+
+    def test_chunk2_price_sanitizer(self):
+        from app.tasks.ingestion_tasks import sanitize_price
+        self.assertEqual(sanitize_price("12500.0"), 12500.0)
+        self.assertEqual(sanitize_price("12,500.00"), 12500.0)
+        self.assertEqual(sanitize_price("₹ 10,800.50"), 10800.5)
+        self.assertEqual(sanitize_price("$450.00"), 450.0)
+        self.assertEqual(sanitize_price(""), 0.0)
+        self.assertEqual(sanitize_price("N/A"), 0.0)
+        self.assertEqual(sanitize_price(None), 0.0)
+
+    def test_chunk5_canonical_synthesis_and_embedding(self):
+        from app.core.config import settings
+        cpcl_raw = "VLV GATE 6IN 300# CS FLG"
+        iocl_raw = "VALVE, GATE, 150MM, CL300, WCB"
+        bpcl_raw = "6 INCH GATE VALVE FLANGED 300#"
+
+        specs_cpcl = SpecExtractor.extract_specs(cpcl_raw)
+        specs_iocl = SpecExtractor.extract_specs(iocl_raw)
+        specs_bpcl = SpecExtractor.extract_specs(bpcl_raw)
+
+        canon_cpcl = EmbeddingService.build_canonical_text(specs_cpcl, cpcl_raw)
+        canon_iocl = EmbeddingService.build_canonical_text(specs_iocl, iocl_raw)
+        canon_bpcl = EmbeddingService.build_canonical_text(specs_bpcl, bpcl_raw)
+
+        self.assertIn("VALVE, GATE", canon_cpcl)
+        self.assertIn("6 INCH (150 MM)", canon_cpcl)
+        self.assertIn("CLASS 300#", canon_cpcl)
+
+        self.assertIn("VALVE, GATE", canon_iocl)
+        self.assertIn("6 INCH (150 MM)", canon_iocl)
+        self.assertIn("CLASS 300#", canon_iocl)
+
+        self.assertIn("VALVE, GATE", canon_bpcl)
+        self.assertIn("6 INCH (150 MM)", canon_bpcl)
+        self.assertIn("CLASS 300#", canon_bpcl)
+
+        # Embedding generation and unit length
+        vec = EmbeddingService.generate_embedding(canon_cpcl)
+        self.assertEqual(len(vec), settings.EMBEDDING_DIMENSION)
+        import math
+        norm = math.sqrt(sum(x * x for x in vec))
+        self.assertAlmostEqual(norm, 1.0, places=4)
+
+        # Batch generation
+        batch_vecs = EmbeddingService.generate_batch_embeddings([canon_cpcl, canon_iocl, canon_bpcl])
+        self.assertEqual(len(batch_vecs), 3)
+
+        # Fallback cross-CPSE similarity
+        v_cpcl = EmbeddingService._deterministic_hash_vector(canon_cpcl, settings.EMBEDDING_DIMENSION)
+        v_iocl = EmbeddingService._deterministic_hash_vector(canon_iocl, settings.EMBEDDING_DIMENSION)
+        sim = CompositeScorer.calculate_cosine_similarity(v_cpcl, v_iocl)
+        self.assertGreaterEqual(sim, 0.90)
+
+    def test_chunk5_dual_adaptive_scorer_rebalancing(self):
+        specs_a = {"item_noun": "VALVE, GATE", "nominal_size": "6 INCH (150 MM)", "pressure_class": "CLASS 300#"}
+        specs_b = {"item_noun": "VALVE, GATE", "nominal_size": "6 INCH (150 MM)", "pressure_class": "CLASS 300#"}
+        proc_a = {"vendor_normalized": "LARSEN & TOUBRO", "unit_price": 10000.0, "hsn_code": "84818030"}
+        proc_b = {"vendor_normalized": "LARSEN & TOUBRO", "unit_price": 10500.0, "hsn_code": "84818030"}
+
+        # Missing vector test: vec_a and vec_b are empty
+        res = CompositeScorer.compute_composite(
+            vec_a=[],
+            vec_b=[],
+            specs_a=specs_a,
+            specs_b=specs_b,
+            proc_a=proc_a,
+            proc_b=proc_b,
+            category="VALVE"
+        )
+
+        self.assertGreaterEqual(res["composite_score"], 0.85)
+        self.assertIn(res["confidence_tier"], ["HIGH", "MEDIUM"])
+        self.assertGreaterEqual(res["weights"]["attribute"], 0.50)
+
+    def test_chunk6_guardrail_canonicalization_and_clearance(self):
+        # Clearance None vs STD equivalence
+        specs_a = {"item_noun": "BEARING", "clean_part_number": "6205", "clearance_suffix": None}
+        specs_b = {"item_noun": "BEARING", "clean_part_number": "6205", "clearance_suffix": "STD"}
+        is_vetoed, reason, route = SafetyGuardrails.evaluate_pair(specs_a, specs_b)
+        self.assertFalse(is_vetoed)
+        self.assertEqual(route, "IDENTICAL")
+
+        # Voltage whitespace tolerance ("415 V" vs "415V")
+        specs_v1 = {"item_noun": "SWITCHGEAR", "voltage_rating": "415 V"}
+        specs_v2 = {"item_noun": "SWITCHGEAR", "voltage_rating": "415V"}
+        is_vetoed, reason, route = SafetyGuardrails.evaluate_pair(specs_v1, specs_v2)
+        self.assertFalse(is_vetoed)
+        self.assertEqual(route, "IDENTICAL")
+
+        # Pressure format canonicalization ("300#" vs "CLASS 300#")
+        specs_p1 = {"item_noun": "VALVE, GATE", "nominal_size": "6 INCH (150 MM)", "pressure_class": "300#"}
+        specs_p2 = {"item_noun": "VALVE, GATE", "nominal_size": "6 INCH (150 MM)", "pressure_class": "CLASS 300#"}
+        is_vetoed, reason, route = SafetyGuardrails.evaluate_pair(specs_p1, specs_p2)
+        self.assertFalse(is_vetoed)
+        self.assertEqual(route, "IDENTICAL")
+
+    def test_chunk6_dsu_cluster_safety_veto_exclusion(self):
+        # Candidate edges where (1, 2) is compatible and (2, 3) is a vetoed schedule mismatch
+        edges = [
+            {"material_a_id": 1, "material_b_id": 2, "composite_score": 0.94, "is_vetoed": False},
+            {"material_a_id": 2, "material_b_id": 3, "composite_score": 0.0, "is_vetoed": True}
+        ]
+        res = ClusterEngine.form_clusters(edges, min_score=0.70)
+        # Material 1 and 2 should be in the same cluster
+        self.assertEqual(res["material_to_cluster"].get(1), res["material_to_cluster"].get(2))
+        # Material 3 must NOT be in the cluster
+        self.assertNotIn(3, res["material_to_cluster"])
 
 if __name__ == "__main__":
     unittest.main()

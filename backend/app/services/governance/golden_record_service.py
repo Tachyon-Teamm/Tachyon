@@ -15,6 +15,15 @@ class GoldenRecordService:
             return {
                 "standardized_description": "UNKNOWN ITEM",
                 "item_noun": "ITEM",
+                "modifier": None,
+                "nominal_size": None,
+                "pressure_class": None,
+                "moc": None,
+                "schedule": None,
+                "end_connection": None,
+                "standard_spec": None,
+                "base_uom": "EA",
+                "technical_attributes": {},
                 "canonical_attributes": {}
             }
 

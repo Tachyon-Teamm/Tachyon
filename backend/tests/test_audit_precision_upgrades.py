@@ -73,5 +73,30 @@ class TestAuditPrecisionUpgrades(unittest.TestCase):
         unit_delta = abs(unit_p_single - unit_p_box)
         self.assertEqual(unit_delta, 300.0)
 
+    def test_8_golden_record_empty_materials_safe(self):
+        """Verify GoldenRecordService returns complete key structure on empty list without KeyError"""
+        from app.services.governance.golden_record_service import GoldenRecordService
+        res = GoldenRecordService.synthesize_iso8000_description([])
+        self.assertIn("standardized_description", res)
+        self.assertIn("item_noun", res)
+        self.assertIn("modifier", res)
+        self.assertIn("nominal_size", res)
+        self.assertIn("pressure_class", res)
+        self.assertIn("moc", res)
+        self.assertEqual(res["item_noun"], "ITEM")
+
+    def test_9_review_action_request_validation(self):
+        """Verify ReviewActionRequest strictly validates allowed decision types"""
+        from app.schemas.schemas import ReviewActionRequest
+        from pydantic import ValidationError
+        
+        # Valid action
+        valid_req = ReviewActionRequest(cluster_group_id="c_1", decision_type="IDENTICAL")
+        self.assertEqual(valid_req.decision_type, "IDENTICAL")
+        
+        # Invalid action should raise ValidationError
+        with self.assertRaises(ValidationError):
+            ReviewActionRequest(cluster_group_id="c_1", decision_type="INVALID_TYPO")
+
 if __name__ == "__main__":
     unittest.main()

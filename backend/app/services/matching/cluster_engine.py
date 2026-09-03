@@ -137,11 +137,12 @@ class ClusterEngine:
 
         material_to_cluster: Dict[int, str] = {}
         for cluster_id, member_ids in named_clusters.items():
-            for mid in member_ids:
-                material_to_cluster[mid] = cluster_id
+            if len(member_ids) >= 2:
+                for mid in member_ids:
+                    material_to_cluster[mid] = cluster_id
 
         return {
             "material_to_cluster": material_to_cluster,
             "clusters": named_clusters,
-            "total_clusters": len(named_clusters)
+            "total_clusters": sum(1 for c in named_clusters.values() if len(c) >= 2)
         }

@@ -29,7 +29,8 @@ class SAPExportService:
             "OLD_MATERIAL_NUMBER",
             "MAPPING_CONFIDENCE_TYPE",
             "GROSS_WEIGHT",
-            "WEIGHT_UNIT"
+            "WEIGHT_UNIT",
+            "LONG_TEXT_ISO8000"
         ]
         writer.writerow(headers)
         
@@ -40,24 +41,32 @@ class SAPExportService:
         rows = query.all()
         for r in rows:
             cnmc = r.cnmc
-            golden = cnmc.golden_record
+            golden = cnmc.golden_record if cnmc else None
             mat = r.material
             cpse = r.cpse
             
+            full_desc = (golden.standardized_description if golden else (mat.short_description if mat else ""))
+            short_desc = full_desc[:40] if full_desc else ""
+            base_uom = (golden.base_uom if golden else (mat.base_uom if mat else "EA")) or "EA"
+            cat_code = (golden.category_code if golden else None) or (mat.category_code if mat else None) or "40141600"
+            pkg_mult = str(mat.package_multiplier if (mat and mat.package_multiplier is not None) else "1.0")
+            weight_unit = "KG" if (mat and mat.base_uom == "KG") else "EA"
+
             writer.writerow([
                 "MM01",                                # SAP T-Code
-                cnmc.code,                             # National Authority Code
-                r.local_material_code,                 # Local CPSE Code
-                cpse.code,                             # CPCL / IOCL / BPCL
+                cnmc.code if cnmc else "",             # National Authority Code
+                r.local_material_code or "",           # Local CPSE Code
+                cpse.code if cpse else "UNK",          # CPCL / IOCL / BPCL
                 "ERSA",                                # Spare Parts Material Type
                 "M",                                   # Mechanical Engineering
-                golden.standardized_description[:40] if golden else mat.short_description[:40],  # SAP 40-char limit
-                golden.base_uom if golden else (mat.base_uom or "EA"),
-                (golden.category_code if golden else None) or mat.category_code or "40141600",
-                r.local_material_code,
-                r.mapping_type,
-                mat.package_multiplier if mat.base_uom == "KG" else "1.0",
-                "KG" if mat.base_uom == "KG" else "EA"
+                short_desc,                            # SAP 40-char limit
+                base_uom,
+                cat_code,
+                r.local_material_code or "",
+                r.mapping_type or "IDENTICAL",
+                pkg_mult,
+                weight_unit,
+                full_desc                              # Full untruncated ISO 8000 specification
             ])
             
         return output.getvalue()

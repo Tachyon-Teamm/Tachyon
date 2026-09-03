@@ -1,37 +1,44 @@
 "use client";
 
 import { useState } from "react";
-import { api } from "@/lib/api";
+import { api, API_BASE_URL } from "@/lib/api";
 import { 
   Layers, 
   Search, 
   Download, 
-  CheckCircle2
+  CheckCircle2,
+  AlertCircle
 } from "lucide-react";
 
 export default function CrosswalkPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCPSE, setSelectedCPSE] = useState("");
   const [lookupResult, setLookupResult] = useState<any>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const handleSearch = async (e?: React.FormEvent) => {
+  const handleSearch = async (e?: React.FormEvent, overrideCode?: string, overrideCPSE?: string) => {
     if (e) e.preventDefault();
-    if (!searchQuery.trim()) return;
+    const codeToSearch = (overrideCode !== undefined ? overrideCode : searchQuery).trim();
+    const cpseToSearch = (overrideCPSE !== undefined ? overrideCPSE : selectedCPSE).trim();
+    if (!codeToSearch) return;
 
     setLoading(true);
+    setErrorMessage(null);
     try {
-      const res = await api.reverseLookup(searchQuery.trim(), selectedCPSE || undefined);
+      const res = await api.reverseLookup(codeToSearch, cpseToSearch || undefined);
       setLookupResult(res);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setLookupResult(null);
+      setErrorMessage(err.message || "Failed to resolve code. Please verify network connectivity and try again.");
     } finally {
       setLoading(false);
     }
   };
 
   const handleExportCSV = (cpse?: string) => {
-    const url = `http://localhost:8000/api/v1/export/sap-lsmw-csv${cpse ? `?cpse_code=${cpse}` : ""}`;
+    const url = `${API_BASE_URL}/export/sap-lsmw-csv${cpse ? `?cpse_code=${cpse}` : ""}`;
     window.open(url, "_blank");
   };
 
@@ -47,13 +54,13 @@ export default function CrosswalkPage() {
             </h1>
           </div>
           <p className="text-xs text-zinc-400 font-normal">
-            Search any legacy CPCL, IOCL, or BPCL material code to resolve the National CNMC authority and its sister links.
+            Search any legacy CPCL, IOCL, BPCL material code OR authoritative National CNMC code to resolve crosswalk mappings.
           </p>
         </div>
 
         <div className="flex items-center space-x-2">
           <button
-            onClick={() => handleExportCSV()}
+            onClick={() => handleExportCSV(selectedCPSE || undefined)}
             className="flex items-center space-x-2 px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-100 border border-zinc-700 rounded-xl text-xs font-semibold apple-press transition"
           >
             <Download className="h-4 w-4" />
@@ -62,17 +69,25 @@ export default function CrosswalkPage() {
         </div>
       </div>
 
+      {/* Error Alert Banner */}
+      {errorMessage && (
+        <div className="flex items-center space-x-3 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-xs">
+          <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+          <span>{errorMessage}</span>
+        </div>
+      )}
+
       {/* Spotlight Search Box */}
       <div className="glass-card p-6 rounded-2xl space-y-4">
         <span className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wider block">
-          Reverse Code Lookup & N:1 Crosswalk Resolver
+          Bidirectional Code Lookup & N:1 Crosswalk Resolver
         </span>
 
         <form onSubmit={handleSearch} className="grid grid-cols-1 sm:grid-cols-4 gap-3">
           <div className="sm:col-span-2">
             <input
               type="text"
-              placeholder="Enter CPCL/IOCL/BPCL Code (e.g. 100234, 889102, 445511)..."
+              placeholder="Enter Local Code (e.g. 100234, 889102) or National Code (e.g. CNMC-00000001-7)..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full glass-input text-white rounded-xl px-4 py-2.5 text-xs font-mono focus:outline-none"
@@ -85,10 +100,19 @@ export default function CrosswalkPage() {
               onChange={(e) => setSelectedCPSE(e.target.value)}
               className="w-full glass-input text-white rounded-xl px-3.5 py-2.5 text-xs font-medium focus:outline-none"
             >
-              <option value="">All Refineries</option>
-              <option value="CPCL">CPCL</option>
-              <option value="IOCL">IOCL</option>
-              <option value="BPCL">BPCL</option>
+              <option value="">All Entities / Nationwide</option>
+              <optgroup label="Oil & Gas">
+                <option value="CPCL">CPCL</option>
+                <option value="IOCL">IOCL</option>
+                <option value="BPCL">BPCL</option>
+                <option value="ONGC">ONGC</option>
+              </optgroup>
+              <optgroup label="Power, Steel & Heavy Eng">
+                <option value="NTPC">NTPC</option>
+                <option value="SAIL">SAIL</option>
+                <option value="COALINDIA">Coal India</option>
+                <option value="BHEL">BHEL</option>
+              </optgroup>
             </select>
           </div>
 
@@ -99,7 +123,7 @@ export default function CrosswalkPage() {
               className="w-full flex items-center justify-center space-x-2 px-4 py-2.5 bg-white hover:bg-zinc-200 text-black rounded-xl text-xs font-bold shadow-sm apple-press transition"
             >
               <Search className="h-3.5 w-3.5 text-black" />
-              <span>{loading ? "Resolving..." : "Reverse Lookup"}</span>
+              <span>{loading ? "Resolving..." : "Lookup Code"}</span>
             </button>
           </div>
         </form>
@@ -109,21 +133,33 @@ export default function CrosswalkPage() {
           <span>Quick Demo:</span>
           <button
             type="button"
-            onClick={() => { setSearchQuery("100234"); setSelectedCPSE("CPCL"); }}
+            onClick={() => {
+              setSearchQuery("100234");
+              setSelectedCPSE("CPCL");
+              handleSearch(undefined, "100234", "CPCL");
+            }}
             className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg font-mono text-[10px] border border-white/[0.08] apple-press"
           >
             100234 (CPCL Gate Valve)
           </button>
           <button
             type="button"
-            onClick={() => { setSearchQuery("889102"); setSelectedCPSE("IOCL"); }}
+            onClick={() => {
+              setSearchQuery("889102");
+              setSelectedCPSE("IOCL");
+              handleSearch(undefined, "889102", "IOCL");
+            }}
             className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg font-mono text-[10px] border border-white/[0.08] apple-press"
           >
             889102 (IOCL Gate Valve)
           </button>
           <button
             type="button"
-            onClick={() => { setSearchQuery("100888"); setSelectedCPSE("CPCL"); }}
+            onClick={() => {
+              setSearchQuery("100888");
+              setSelectedCPSE("CPCL");
+              handleSearch(undefined, "100888", "CPCL");
+            }}
             className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg font-mono text-[10px] border border-white/[0.08] apple-press"
           >
             100888 (CPCL 4" Pipe)

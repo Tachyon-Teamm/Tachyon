@@ -1,6 +1,6 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, or_, and_
 from app.core.database import get_db
 from app.models.models import Material, CPSE, ProcurementHistory
@@ -17,16 +17,16 @@ async def get_materials(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db)
 ):
-    query = select(Material)
+    query = select(Material).options(
+        joinedload(Material.cpse),
+        joinedload(Material.procurement_records)
+    )
     
     if cpse_code:
-        cpse_res = await db.execute(select(CPSE).filter(CPSE.code == cpse_code.upper()))
-        cpse = cpse_res.scalars().first()
-        if cpse:
-            query = query.filter(Material.cpse_id == cpse.id)
+        query = query.join(Material.cpse).filter(CPSE.code == cpse_code.upper())
             
     if search:
-        s = f"%{search.strip().upper()}%"
+        s = f"%{search.strip()}%"
         query = query.filter(
             or_(
                 Material.material_code.ilike(s),
@@ -40,14 +40,12 @@ async def get_materials(
         
     query = query.order_by(Material.id.desc()).offset(offset).limit(limit)
     res = await db.execute(query)
-    materials = res.scalars().all()
+    materials = res.scalars().unique().all()
     
     out = []
     for m in materials:
-        cpse_res = await db.execute(select(CPSE).filter(CPSE.id == m.cpse_id))
-        cpse = cpse_res.scalars().first()
-        proc_res = await db.execute(select(ProcurementHistory).filter(ProcurementHistory.material_id == m.id))
-        proc = proc_res.scalars().first()
+        cpse = m.cpse
+        proc = m.procurement_records[0] if (m.procurement_records and len(m.procurement_records) > 0) else None
         
         out.append(MaterialResponse(
             id=m.id,

@@ -29,5 +29,15 @@ class TestUOMNormalizer(unittest.TestCase):
         self.assertEqual(mult3, 1.0)
         self.assertEqual(base3, "EA")
 
+        # Bearing with brass cage suffix M (must not be converted to meters)
+        mult4, base4 = UOMNormalizer.extract_packaging_factor("SKF BEARING 6205 M", "EA")
+        self.assertEqual(mult4, 1.0)
+        self.assertEqual(base4, "EA")
+
+        # Fasteners count pack
+        mult5, base5 = UOMNormalizer.extract_packaging_factor("HEX BOLT M16 X 50 PACK OF 100 NOS", "NOS")
+        self.assertEqual(mult5, 100.0)
+        self.assertEqual(base5, "EA")
+
 if __name__ == "__main__":
     unittest.main()

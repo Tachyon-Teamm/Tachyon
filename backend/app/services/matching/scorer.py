@@ -230,22 +230,27 @@ class CompositeScorer:
         # 4. Procurement Graph Score
         s_po = cls.calculate_procurement_score(proc_a, proc_b)
 
-        # Missing Signal Graceful Normalization: w'_i = w_i / (1 - w_po)
+        # Dual Missing Signal Graceful Normalization (Semantic + Procurement)
+        has_sem = bool(vec_a and vec_b and len(vec_a) == len(vec_b))
         has_proc = bool(
             proc_a and proc_b and
             (proc_a.get("unit_price") or proc_a.get("vendor_normalized")) and
             (proc_b.get("unit_price") or proc_b.get("vendor_normalized"))
         )
 
-        if not has_proc and w_po > 0:
-            denom = 1.0 - w_po
-            if denom > 0:
-                w_sem = round(w_sem / denom, 4)
-                w_spec = round(w_spec / denom, 4)
-                w_sparse = round(w_sparse / denom, 4)
-                w_po = 0.0
-            else:
-                w_sem, w_spec, w_sparse, w_po = 0.40, 0.40, 0.20, 0.0
+        w_sem_eff = w_sem if has_sem else 0.0
+        w_spec_eff = w_spec
+        w_sparse_eff = w_sparse if ((sparse_a and sparse_b) or has_sem) else 0.0
+        w_po_eff = w_po if has_proc else 0.0
+
+        total_active = w_sem_eff + w_spec_eff + w_sparse_eff + w_po_eff
+        if total_active > 0:
+            w_sem = round(w_sem_eff / total_active, 4)
+            w_spec = round(w_spec_eff / total_active, 4)
+            w_sparse = round(w_sparse_eff / total_active, 4)
+            w_po = round(w_po_eff / total_active, 4)
+        else:
+            w_sem, w_spec, w_sparse, w_po = 0.0, 1.0, 0.0, 0.0
 
         composite = (w_sem * s_sem) + (w_spec * s_spec) + (w_sparse * s_sparse) + (w_po * s_po)
 

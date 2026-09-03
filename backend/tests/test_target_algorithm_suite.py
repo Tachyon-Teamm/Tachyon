@@ -15,8 +15,12 @@ from app.services.normalization.data_profiler import DataProfiler
 class TestTargetAlgorithmSuite(unittest.TestCase):
     def test_1_bge_m3_1024d_and_sparse_splade(self):
         desc = "VALVE GATE 2IN 300# WCB FLG RF ASME B16.34"
+        from app.core.config import settings
         dense_vec = EmbeddingService.generate_embedding(desc)
-        self.assertEqual(len(dense_vec), 1024)
+        self.assertEqual(len(dense_vec), settings.EMBEDDING_DIMENSION)
+        
+        dense_1024 = EmbeddingService._deterministic_hash_vector(desc, 1024)
+        self.assertEqual(len(dense_1024), 1024)
         
         sparse_vec = EmbeddingService.generate_sparse_vector(desc)
         self.assertTrue("300#" in sparse_vec or "300" in sparse_vec)

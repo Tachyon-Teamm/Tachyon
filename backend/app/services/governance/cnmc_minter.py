@@ -76,9 +76,13 @@ class CNMCMinter:
         max_id = db.query(func.max(CNMCCode.id)).scalar() or 0
         next_seq = max_id + 1
         
-        seq_str = f"{next_seq:0{settings.CNMC_DIGITS}d}"
-        checksum = calculate_verhoeff_checksum(seq_str)
-        code_str = f"{settings.CNMC_PREFIX}-{seq_str}-{checksum}"
+        while True:
+            seq_str = f"{next_seq:0{settings.CNMC_DIGITS}d}"
+            checksum = calculate_verhoeff_checksum(seq_str)
+            code_str = f"{settings.CNMC_PREFIX}-{seq_str}-{checksum}"
+            if not db.query(CNMCCode).filter(CNMCCode.code == code_str).first():
+                break
+            next_seq += 1
         
         cnmc_entry = CNMCCode(
             code=code_str,

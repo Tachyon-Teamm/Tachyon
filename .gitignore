@@ -35,8 +35,15 @@ redisdata/
 .DS_Store
 Thumbs.db
 
-# Uploads
+# Uploads & Temporary Uploads
 uploads/
+temp_uploads/
+*/temp_uploads/
+
+# Build & Test Caches
+*.tsbuildinfo
+.turbo/
+.pytest_cache/
 
 # Coverage
 htmlcov/

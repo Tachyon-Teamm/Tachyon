@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.database import SyncSessionLocal, sync_engine
 from app.core.security import get_password_hash
@@ -5,8 +6,26 @@ from app.models.models import Base, CPSE, User, TaxonomyCategory
 from app.db.seed_data import seed_enterprise_scenarios
 from app.db.taxonomy_seed import seed_multi_sector_taxonomies
 
+
 def init_db():
     Base.metadata.create_all(bind=sync_engine)
+    try:
+        with sync_engine.begin() as conn:
+            conn.execute(text("ALTER TABLE material_embeddings ADD COLUMN IF NOT EXISTS sparse_vector JSON DEFAULT '{}'::json"))
+            conn.execute(text("ALTER TABLE material_embeddings ADD COLUMN IF NOT EXISTS model_name VARCHAR(50) DEFAULT 'all-MiniLM-L6-v2'"))
+            conn.execute(text("ALTER TABLE match_candidates ADD COLUMN IF NOT EXISTS suggested_route VARCHAR(30) DEFAULT 'IDENTICAL'"))
+            conn.execute(text("ALTER TABLE match_jobs ADD COLUMN IF NOT EXISTS error_message TEXT"))
+            conn.execute(text("ALTER TABLE match_jobs ALTER COLUMN error_message TYPE TEXT"))
+            conn.execute(text("ALTER TABLE ingestion_batches ADD COLUMN IF NOT EXISTS error_message TEXT"))
+            conn.execute(text("ALTER TABLE ingestion_batches ADD COLUMN IF NOT EXISTS quality_score FLOAT"))
+    except Exception as e:
+        print(f"[init_db] Column safeguard notice: {e}")
+    with sync_engine.connect() as conn:
+        try:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw ON material_embeddings USING hnsw (embedding vector_cosine_ops);"))
+            conn.commit()
+        except Exception as e:
+            print(f"[init_db] Note on index creation: {e}")
     db = SyncSessionLocal()
     try:
         # 1. Seed CPSEs across multi-sector landscape

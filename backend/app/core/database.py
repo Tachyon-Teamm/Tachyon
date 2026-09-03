@@ -3,12 +3,14 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy import create_engine
 from app.core.config import settings
 
+from sqlalchemy.pool import NullPool
+
 # Async engine for FastAPI routes
 async_engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     future=True,
-    pool_pre_ping=True
+    poolclass=NullPool
 )
 
 AsyncSessionLocal = async_sessionmaker(

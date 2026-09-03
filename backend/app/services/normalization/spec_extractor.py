@@ -50,8 +50,15 @@ class SpecExtractor:
             "raw_preprocessed": desc
         }
         
-        # 1. Item Noun Extraction
-        if re.search(r'\bVALVE\b|\bVLV\b', desc):
+        # 1. Item Noun Extraction (Precedence: Specialized components first)
+        if re.search(r'\bGASKET\b', desc):
+            if "SPIRAL" in desc:
+                specs["item_noun"] = "GASKET, SPIRAL WOUND"
+            else:
+                specs["item_noun"] = "GASKET"
+        elif re.search(r'\bBOLT\b|\bNUT\b|\bSTUD\b|\bFASTENER\b', desc) and not re.search(r'\bVALVE\b|\bPIPE\b', desc):
+            specs["item_noun"] = "FASTENER"
+        elif re.search(r'\bVALVE\b|\bVLV\b', desc):
             if re.search(r'\bGATE\b', desc):
                 specs["item_noun"] = "VALVE, GATE"
             elif re.search(r'\bGLOBE\b', desc):
@@ -72,11 +79,6 @@ class SpecExtractor:
             specs["item_noun"] = "PIPE"
         elif re.search(r'\bFLANGE\b|\bFLG\b', desc) and not re.search(r'\bVALVE\b', desc):
             specs["item_noun"] = "FLANGE"
-        elif re.search(r'\bGASKET\b', desc):
-            if "SPIRAL" in desc:
-                specs["item_noun"] = "GASKET, SPIRAL WOUND"
-            else:
-                specs["item_noun"] = "GASKET"
         elif re.search(r'\bBEARING\b|\bBRG\b', desc):
             specs["item_noun"] = "BEARING"
         elif re.search(r'\bMECHANICAL\s*SEAL\b|\bMECH\s*SEAL\b|\bOIL\s*SEAL\b|\bSEAL\b', desc):
@@ -127,11 +129,11 @@ class SpecExtractor:
                     else:
                         specs["nominal_size"] = matched_size
 
-        # 3. Pressure Rating Extraction
-        direct_press = re.search(r'\b(?:CL(?:ASS)?\s*(\d{2,4})|PN\s*(\d{2,4})|(\d{2,4})\s*#|(\d{2,4})\s*LBS?)\b', desc)
+        # 3. Pressure Rating Extraction (Strict boundary-aware disambiguation)
+        direct_press = re.search(r'\b(?:CL(?:ASS)?\s*(\d{2,4})|PN\s*(\d{1,4})|(\d{2,4})\s*#|(\d{2,4})\s*LBS?)\b', desc)
         if direct_press:
             val = direct_press.group(1) or direct_press.group(2) or direct_press.group(3) or direct_press.group(4)
-            if "PN" in desc:
+            if direct_press.group(2) or re.search(r'\bPN\s*\d+\b', desc):
                 specs["pressure_class"] = f"PN {val}"
             else:
                 specs["pressure_class"] = f"CLASS {val}#"
@@ -151,7 +153,10 @@ class SpecExtractor:
         elif re.search(r'\bSS\s*304L?\b|\bSTAINLESS\s*STEEL\s*304\b|\bCF8\b|\bTP304\b', desc):
             specs["moc"] = "STAINLESS STEEL 304 (CF8/TP304)"
         elif re.search(r'\bCARBON\s*STEEL\b|\bCS\b', desc):
-            specs["moc"] = "ASTM A216 WCB"
+            if specs.get("item_noun") == "PIPE":
+                specs["moc"] = "ASTM A106 GR.B"
+            else:
+                specs["moc"] = "ASTM A216 WCB"
         elif re.search(r'\bMONEL\b', desc):
             specs["moc"] = "MONEL"
         elif re.search(r'\bINCONEL\b', desc):
@@ -294,7 +299,11 @@ class SpecExtractor:
         Extracts structured parameters via local vLLM / OpenAI-compatible endpoint with JSON schema constraint,
         falling back to deterministic parametric extraction.
         """
-        import httpx
+        try:
+            import httpx
+        except ImportError:
+            return cls.extract_specs(raw_description)
+
         from app.core.config import settings
 
         # Start with fast deterministic extraction as solid base

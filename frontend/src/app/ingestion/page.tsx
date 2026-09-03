@@ -35,17 +35,28 @@ const REAL_SAMPLE_CSVS: Record<string, string> = {
 445888,4 INCH SEAMLESS PIPE SCH40 A106,MTR,2520.0,Jindal Saw,73041910
 445501,BRG SKF 6205-2RS1,PCS,870.0,SKF,84821010
 445612,MOBILITH SHC 100 - 180KG DRUM,DRM,108000.0,ExxonMobil,27101980
-445333,GASKET SPIRAL 4 INCH 300#,EA,460.0,Champion,84841000`
+445333,GASKET SPIRAL 4 INCH 300#,EA,460.0,Champion,84841000`,
+  NTPC: `MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE
+770101,TRANSFORMER 33KV / 11KV 10MVA ONAN,EA,4200000.0,BHEL,85042300
+770202,HT XLPE CABLE 3 CORE 11KV 300 SQMM,MTR,1850.0,Polycab India,85446090
+770303,VACUUM CIRCUIT BREAKER 11KV 1250A 25KA,EA,310000.0,ABB India,85352190`,
+  SAIL: `MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE
+990101,TMT REBAR FE 500D 16MM DIA IS 1786,MT,54000.0,SAIL Plants,72142090
+990202,HIGH ALUMINA REFRACTORY BRICK 70% AL2O3,MT,32000.0,TRL Krosaki,69022020
+990303,CONVEYOR BELTING 1200MM WIDTH 1000/4 GRADE M,MTR,4500.0,Fenner India,40101200`
 };
+
 
 export default function IngestionPage() {
   const [selectedCPSE, setSelectedCPSE] = useState<string>("IOCL");
   const [file, setFile] = useState<File | null>(null);
+  const [uploadId, setUploadId] = useState<string | null>(null);
   const [detectData, setDetectData] = useState<any>(null);
   const [mappingConfig, setMappingConfig] = useState<Record<string, string>>({});
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const [isStartingBatch, setIsStartingBatch] = useState<boolean>(false);
   const [batchResult, setBatchResult] = useState<any>(null);
+  const [progressInfo, setProgressInfo] = useState<{ id: number; processed: number; total: number; percent: number; status: string } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -54,12 +65,15 @@ export default function IngestionPage() {
       setFile(selected);
       setErrorMsg(null);
       setDetectData(null);
+      setUploadId(null);
       setBatchResult(null);
+      setProgressInfo(null);
 
       setIsDetecting(true);
       try {
         const res = await api.detectColumns(selected, selectedCPSE);
         setDetectData(res);
+        setUploadId(res.upload_id || null);
         setMappingConfig(res.suggested_mappings || {});
       } catch (err: any) {
         setErrorMsg(err.message || "Failed to detect columns from file");
@@ -74,12 +88,15 @@ export default function IngestionPage() {
     setIsDetecting(true);
     setErrorMsg(null);
     setBatchResult(null);
+    setProgressInfo(null);
+    setUploadId(null);
     try {
       const csvContent = REAL_SAMPLE_CSVS[cpse] || REAL_SAMPLE_CSVS["IOCL"];
       const realFile = new File([csvContent], `${cpse.toLowerCase()}_sample_extract.csv`, { type: "text/csv" });
       setFile(realFile);
       const res = await api.detectColumns(realFile, cpse);
       setDetectData(res);
+      setUploadId(res.upload_id || null);
       setMappingConfig(res.suggested_mappings || {});
     } catch (err: any) {
       setErrorMsg(err.message || "Failed to load sample");
@@ -88,24 +105,90 @@ export default function IngestionPage() {
     }
   };
 
-  const handleMappingChange = (sourceCol: string, targetField: string) => {
-    setMappingConfig((prev) => ({
-      ...prev,
+  const handleMappingChange = async (sourceCol: string, targetField: string) => {
+    const newMapping = {
+      ...mappingConfig,
       [sourceCol]: targetField,
-    }));
+    };
+    setMappingConfig(newMapping);
+
+    if (detectData && detectData.preview_rows && detectData.preview_rows.length > 0) {
+      try {
+        const previewRes = await api.recalculatePreview(detectData.preview_rows, newMapping);
+        if (previewRes && previewRes.preview_rows) {
+          setDetectData((prev: any) => ({
+            ...prev,
+            preview_rows: previewRes.preview_rows,
+            quality_score: previewRes.quality_score ?? prev.quality_score,
+          }));
+        }
+      } catch (err) {
+        // Continue silently if preview recalculation fails
+      }
+    }
   };
 
+  // Derive mapping validation and target field counts
+  const targetCounts = Object.entries(mappingConfig).reduce((acc, [col, target]) => {
+    if (target !== "unmapped") {
+      acc[target] = (acc[target] || 0) + 1;
+    }
+    return acc;
+  }, {} as Record<string, number>);
+
+  const duplicateTargets = Object.entries(targetCounts)
+    .filter(([_, count]) => count > 1)
+    .map(([target]) => target);
+  const hasDuplicateTargets = duplicateTargets.length > 0;
+  const isMaterialCodeMapped = Object.values(mappingConfig).includes("material_code");
+  const isShortDescMapped = Object.values(mappingConfig).includes("short_description");
+  const canStartBatch = isMaterialCodeMapped && isShortDescMapped && !hasDuplicateTargets;
+
+  // Dynamically resolve source column mapped to description and uom
+  const descColumn = Object.entries(mappingConfig).find(([_, target]) => target === "short_description")?.[0];
+  const uomColumn = Object.entries(mappingConfig).find(([_, target]) => target === "uom")?.[0];
+
   const handleStartBatch = async () => {
-    if (!file || !detectData) return;
+    if (!detectData || !canStartBatch) return;
     setIsStartingBatch(true);
     setErrorMsg(null);
+    setProgressInfo(null);
 
     try {
-      const res = await api.startBatch(file, selectedCPSE, JSON.stringify(mappingConfig));
+      const res = await api.startBatch(file, selectedCPSE, JSON.stringify(mappingConfig), uploadId || undefined);
       setBatchResult(res);
+      setProgressInfo({
+        id: res.id,
+        processed: res.processed_rows || 0,
+        total: res.total_rows || 0,
+        percent: 0,
+        status: res.status || "PROCESSING"
+      });
+
+      // Poll background worker progress
+      const pollTimer = setInterval(async () => {
+        try {
+          const statusRes = await api.getBatchStatus(res.id);
+          setProgressInfo({
+            id: statusRes.id,
+            processed: statusRes.processed_rows,
+            total: statusRes.total_rows,
+            percent: statusRes.percent_complete,
+            status: statusRes.status
+          });
+
+          if (statusRes.status === "COMPLETED" || statusRes.status === "FAILED") {
+            clearInterval(pollTimer);
+            setIsStartingBatch(false);
+            setBatchResult((prev: any) => ({ ...prev, status: statusRes.status, processed_rows: statusRes.processed_rows }));
+          }
+        } catch (pollErr) {
+          console.error("Batch polling error:", pollErr);
+        }
+      }, 1500);
+
     } catch (err: any) {
       setErrorMsg(err.message || "Failed to start batch ingestion");
-    } finally {
       setIsStartingBatch(false);
     }
   };
@@ -136,15 +219,24 @@ export default function IngestionPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
-            <label className="text-xs font-medium text-zinc-300 block mb-1.5">Target Refinery Entity</label>
+            <label className="text-xs font-medium text-zinc-300 block mb-1.5">Target CPSE Entity</label>
             <select
               value={selectedCPSE}
               onChange={(e) => setSelectedCPSE(e.target.value)}
               className="w-full glass-input text-white rounded-xl px-3.5 py-2.5 text-xs font-medium focus:outline-none"
             >
-              <option value="CPCL">CPCL (Chennai Petroleum Corporation Ltd)</option>
-              <option value="IOCL">IOCL (Indian Oil Corporation Ltd)</option>
-              <option value="BPCL">BPCL (Bharat Petroleum Corporation Ltd)</option>
+              <optgroup label="Oil & Gas">
+                <option value="CPCL">CPCL (Chennai Petroleum Corporation Ltd)</option>
+                <option value="IOCL">IOCL (Indian Oil Corporation Ltd)</option>
+                <option value="BPCL">BPCL (Bharat Petroleum Corporation Ltd)</option>
+                <option value="ONGC">ONGC (Oil and Natural Gas Corp)</option>
+              </optgroup>
+              <optgroup label="Power & Steel & Mining">
+                <option value="NTPC">NTPC (Power Generation Ltd)</option>
+                <option value="SAIL">SAIL (Steel Authority of India Ltd)</option>
+                <option value="COALINDIA">Coal India (Mining & Minerals)</option>
+                <option value="BHEL">BHEL (Heavy Electricals Ltd)</option>
+              </optgroup>
             </select>
           </div>
 
@@ -168,28 +260,42 @@ export default function IngestionPage() {
         </div>
 
         {/* Quick Sample Selector */}
-        <div className="flex items-center space-x-2 pt-1 text-[11px] text-zinc-400">
+        <div className="flex flex-wrap items-center gap-2 pt-1 text-[11px] text-zinc-400">
           <span>Quick Sample:</span>
           <button
             type="button"
             onClick={() => loadSample("CPCL")}
             className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/[0.08] apple-press font-medium"
           >
-            CPCL Sample
+            CPCL (O&G)
           </button>
           <button
             type="button"
             onClick={() => loadSample("IOCL")}
             className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/[0.08] apple-press font-medium"
           >
-            IOCL Sample
+            IOCL (O&G)
           </button>
           <button
             type="button"
             onClick={() => loadSample("BPCL")}
             className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/[0.08] apple-press font-medium"
           >
-            BPCL Sample
+            BPCL (O&G)
+          </button>
+          <button
+            type="button"
+            onClick={() => loadSample("NTPC")}
+            className="px-2.5 py-1 rounded-lg bg-amber-950/40 hover:bg-amber-900/50 text-amber-300 border border-amber-500/20 apple-press font-medium"
+          >
+            NTPC (Power)
+          </button>
+          <button
+            type="button"
+            onClick={() => loadSample("SAIL")}
+            className="px-2.5 py-1 rounded-lg bg-blue-950/40 hover:bg-blue-900/50 text-blue-300 border border-blue-500/20 apple-press font-medium"
+          >
+            SAIL (Steel)
           </button>
         </div>
 
@@ -197,6 +303,30 @@ export default function IngestionPage() {
           <div className="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-xl flex items-center space-x-2">
             <AlertCircle className="h-4 w-4 flex-shrink-0 text-rose-400" />
             <span>{errorMsg}</span>
+          </div>
+        )}
+
+        {/* Data Quality Overview Card */}
+        {detectData?.quality_report && (
+          <div className="p-4 bg-zinc-900/60 border border-white/[0.08] rounded-xl space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-zinc-200 flex items-center space-x-1.5">
+                <FileCheck2 className="h-4 w-4 text-emerald-400" />
+                <span>Pre-Flight Data Health Score</span>
+              </span>
+              <span className={`text-xs font-bold font-mono px-2.5 py-0.5 rounded-full ${
+                (detectData.quality_score || 0) >= 0.85 
+                  ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
+                  : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+              }`}>
+                {Math.round((detectData.quality_score || 0) * 100)}% Quality
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 pt-1 text-[11px] text-zinc-400">
+              <div>Completeness: <span className="text-white font-mono">{Math.round((detectData.quality_report.completeness_rate || 1) * 100)}%</span></div>
+              <div>Validity: <span className="text-white font-mono">{Math.round((detectData.quality_report.validity_rate || 1) * 100)}%</span></div>
+              <div>Header Offset: <span className="text-white font-mono">Row #{detectData.header_row_index + 1}</span></div>
+            </div>
           </div>
         )}
 
@@ -232,6 +362,13 @@ export default function IngestionPage() {
             </span>
           </div>
 
+          {hasDuplicateTargets && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs rounded-xl flex items-center space-x-2">
+              <AlertCircle className="h-4 w-4 flex-shrink-0 text-amber-400" />
+              <span>Duplicate target field detected: <strong>{duplicateTargets.join(", ")}</strong>. Each field must map to only one source column.</span>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs text-zinc-300">
               <thead className="bg-zinc-950 text-zinc-400 font-medium border-b border-white/[0.08]">
@@ -246,14 +383,17 @@ export default function IngestionPage() {
                 {detectData.detected_columns.map((col: string) => {
                   const target = mappingConfig[col] || "unmapped";
                   const conf = detectData.confidence_scores[col] || 0.90;
+                  const isDuplicate = target !== "unmapped" && (targetCounts[target] || 0) > 1;
                   return (
-                    <tr key={col} className="hover:bg-zinc-900/40 transition-colors">
+                    <tr key={col} className={`hover:bg-zinc-900/40 transition-colors ${isDuplicate ? "bg-amber-500/[0.04]" : ""}`}>
                       <td className="py-3 px-4 font-semibold text-white">{col}</td>
                       <td className="py-3 px-4">
                         <select
                           value={target}
                           onChange={(e) => handleMappingChange(col, e.target.value)}
-                          className="glass-input text-zinc-100 rounded-lg px-3 py-1.5 text-xs font-sans focus:outline-none"
+                          className={`glass-input rounded-lg px-3 py-1.5 text-xs font-sans focus:outline-none ${
+                            isDuplicate ? "border-amber-500/50 text-amber-200" : "text-zinc-100"
+                          }`}
                         >
                           <option value="material_code">material_code (Material / SAP Code)</option>
                           <option value="short_description">short_description (Specification Text)</option>
@@ -274,9 +414,15 @@ export default function IngestionPage() {
                         </span>
                       </td>
                       <td className="py-3 px-4 text-center font-sans">
-                        <span className="inline-flex items-center text-zinc-300 text-xs font-medium">
-                          <FileCheck2 className="h-3.5 w-3.5 mr-1 text-zinc-400" /> Auto-Validated
-                        </span>
+                        {isDuplicate ? (
+                          <span className="inline-flex items-center text-amber-400 text-xs font-medium">
+                            <AlertCircle className="h-3.5 w-3.5 mr-1" /> Duplicate
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center text-zinc-300 text-xs font-medium">
+                            <FileCheck2 className="h-3.5 w-3.5 mr-1 text-zinc-400" /> Auto-Validated
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -287,9 +433,12 @@ export default function IngestionPage() {
 
           {/* Step 3: Live 5-Row Normalization Preview */}
           <div className="pt-5 border-t border-white/[0.08] space-y-3">
-            <div className="flex items-center space-x-1.5">
+            <div className="flex items-center justify-between">
               <span className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wider">
                 Step 3 • Live 5-Row Normalization Preview
+              </span>
+              <span className="text-[11px] text-zinc-500">
+                Resolved text from: <strong className="text-zinc-300 font-mono">{descColumn || "unmapped"}</strong>
               </span>
             </div>
 
@@ -305,56 +454,106 @@ export default function IngestionPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.04]">
-                  {detectData.preview_rows.map((row: any, idx: number) => (
-                    <tr key={idx} className="hover:bg-zinc-900/40 transition-colors">
-                      <td className="py-3 px-3 font-mono text-zinc-500">{idx + 1}</td>
-                      <td className="py-3 px-3 text-zinc-400 font-mono text-[11px]">
-                        {row.ITEM_SPEC || row.DESCRIPTION || Object.values(row)[1] || ""}
-                      </td>
-                      <td className="py-3 px-3 text-zinc-200 font-medium">
-                        {row._preview_normalized_desc}
-                      </td>
-                      <td className="py-3 px-3">
-                        <div className="flex flex-wrap gap-1">
-                          {row._preview_specs?.item_noun && (
-                            <span className="px-2 py-0.5 bg-zinc-800 text-zinc-200 rounded-md text-[10px] border border-white/[0.06]">
-                              {row._preview_specs.item_noun}
-                            </span>
-                          )}
-                          {row._preview_specs?.nominal_size && (
-                            <span className="px-2 py-0.5 bg-zinc-800 text-zinc-200 rounded-md text-[10px] border border-white/[0.06]">
-                              {row._preview_specs.nominal_size}
-                            </span>
-                          )}
-                          {row._preview_specs?.pressure_class && (
-                            <span className="px-2 py-0.5 bg-zinc-800 text-zinc-200 rounded-md text-[10px] border border-white/[0.06]">
-                              {row._preview_specs.pressure_class}
-                            </span>
-                          )}
-                          {row._preview_specs?.moc && (
-                            <span className="px-2 py-0.5 bg-zinc-800 text-zinc-200 rounded-md text-[10px] border border-white/[0.06]">
-                              {row._preview_specs.moc}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 font-bold text-white font-mono">{row._preview_uom}</td>
-                    </tr>
-                  ))}
+                  {detectData.preview_rows.map((row: any, idx: number) => {
+                    const dynamicRawDesc = descColumn && row[descColumn] !== undefined && String(row[descColumn]).trim() !== "" 
+                      ? String(row[descColumn]) 
+                      : (row.ITEM_SPEC || row.DESCRIPTION || row.MAKTX || row.SHORT_DESC || Object.values(row)[1] || "");
+                    const dynamicRawUom = uomColumn && row[uomColumn] !== undefined 
+                      ? String(row[uomColumn]) 
+                      : (row._preview_uom || "EA");
+
+                    return (
+                      <tr key={idx} className="hover:bg-zinc-900/40 transition-colors">
+                        <td className="py-3 px-3 font-mono text-zinc-500">{idx + 1}</td>
+                        <td className="py-3 px-3 text-zinc-400 font-mono text-[11px]">
+                          {dynamicRawDesc}
+                        </td>
+                        <td className="py-3 px-3 text-zinc-200 font-medium">
+                          {row._preview_normalized_desc || dynamicRawDesc}
+                        </td>
+                        <td className="py-3 px-3">
+                          <div className="flex flex-wrap gap-1">
+                            {row._preview_specs?.item_noun && (
+                              <span className="px-2 py-0.5 bg-zinc-800 text-zinc-200 rounded-md text-[10px] border border-white/[0.06]">
+                                {row._preview_specs.item_noun}
+                              </span>
+                            )}
+                            {row._preview_specs?.nominal_size && (
+                              <span className="px-2 py-0.5 bg-zinc-800 text-zinc-200 rounded-md text-[10px] border border-white/[0.06]">
+                                {row._preview_specs.nominal_size}
+                              </span>
+                            )}
+                            {row._preview_specs?.pressure_class && (
+                              <span className="px-2 py-0.5 bg-zinc-800 text-zinc-200 rounded-md text-[10px] border border-white/[0.06]">
+                                {row._preview_specs.pressure_class}
+                              </span>
+                            )}
+                            {row._preview_specs?.moc && (
+                              <span className="px-2 py-0.5 bg-zinc-800 text-zinc-200 rounded-md text-[10px] border border-white/[0.06]">
+                                {row._preview_specs.moc}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 font-bold text-white font-mono">{dynamicRawUom}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
 
-            {/* Action Bar */}
-            <div className="pt-4 flex items-center justify-end space-x-3">
-              <button
-                onClick={handleStartBatch}
-                disabled={isStartingBatch}
-                className="flex items-center space-x-2 px-6 py-2.5 bg-white hover:bg-zinc-200 text-black rounded-xl text-xs font-bold shadow-sm apple-press disabled:opacity-50 transition"
-              >
-                <span>{isStartingBatch ? "Processing Batch Ingestion..." : "Start Batch Ingestion"}</span>
-                <ArrowRight className="h-4 w-4 text-black" />
-              </button>
+            {/* Live Progress Bar & Status */}
+            {progressInfo && (
+              <div className="p-4 bg-zinc-950/80 rounded-xl border border-white/[0.08] space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-zinc-200 flex items-center space-x-2">
+                    {progressInfo.status === "PROCESSING" && (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin text-amber-400 inline mr-1" />
+                    )}
+                    {progressInfo.status === "COMPLETED" && (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 inline mr-1" />
+                    )}
+                    <span>Batch #{progressInfo.id} • {progressInfo.status}</span>
+                  </span>
+                  <span className="font-mono text-zinc-400">
+                    {progressInfo.processed} / {progressInfo.total} rows ({progressInfo.percent}%)
+                  </span>
+                </div>
+                <div className="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
+                  <div 
+                    className={`h-full transition-all duration-300 rounded-full ${
+                      progressInfo.status === "COMPLETED" ? "bg-emerald-500" : "bg-white"
+                    }`}
+                    style={{ width: `${Math.max(5, progressInfo.percent)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Action Bar & Mandatory Field Checklist */}
+            <div className="pt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="flex items-center space-x-4 text-xs font-medium">
+                <span className={`inline-flex items-center ${isMaterialCodeMapped ? "text-emerald-400" : "text-zinc-500"}`}>
+                  <CheckCircle2 className={`h-3.5 w-3.5 mr-1 ${isMaterialCodeMapped ? "text-emerald-400" : "text-zinc-600"}`} />
+                  Material Code {isMaterialCodeMapped ? "Mapped" : "Required"}
+                </span>
+                <span className={`inline-flex items-center ${isShortDescMapped ? "text-emerald-400" : "text-zinc-500"}`}>
+                  <CheckCircle2 className={`h-3.5 w-3.5 mr-1 ${isShortDescMapped ? "text-emerald-400" : "text-zinc-600"}`} />
+                  Description {isShortDescMapped ? "Mapped" : "Required"}
+                </span>
+              </div>
+
+              <div className="flex items-center space-x-3">
+                <button
+                  onClick={handleStartBatch}
+                  disabled={isStartingBatch || !canStartBatch || (progressInfo?.status === "PROCESSING")}
+                  className="flex items-center space-x-2 px-6 py-2.5 bg-white hover:bg-zinc-200 text-black rounded-xl text-xs font-bold shadow-sm apple-press disabled:opacity-50 disabled:cursor-not-allowed transition"
+                >
+                  <span>{isStartingBatch ? "Processing Batch..." : "Start Batch Ingestion"}</span>
+                  <ArrowRight className="h-4 w-4 text-black" />
+                </button>
+              </div>
             </div>
           </div>
         </div>

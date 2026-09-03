@@ -1,5 +1,9 @@
 import unittest
+import sys
+import os
 from typing import Dict, Any
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.services.normalization.data_profiler import DataProfiler, DataQualityReport
 from app.services.normalization.domain_lexicon import DomainLexicon

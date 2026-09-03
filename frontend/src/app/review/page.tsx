@@ -474,7 +474,7 @@ export default function ReviewQueuePage() {
 
                   <button
                     onClick={() => handleAction(selectedRelationship)}
-                    disabled={actionLoading}
+                    disabled={actionLoading || selectedMaterialIds.length === 0}
                     className="flex items-center space-x-2 px-5 py-2 bg-white hover:bg-zinc-200 text-black rounded-xl text-xs font-bold shadow-sm apple-press transition disabled:opacity-50"
                   >
                     <CheckCircle2 className="h-4 w-4 text-black" />

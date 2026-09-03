@@ -1,4 +1,4 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
 export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
@@ -42,9 +42,18 @@ export const api = {
     }
     return await res.json();
   },
-  startBatch: async (file: File, cpseCode: string, mappingJson: string) => {
+  startBatch: async (
+    fileOrNull: File | null, 
+    cpseCode: string, 
+    mappingJson: string, 
+    uploadId?: string
+  ) => {
     const formData = new FormData();
-    formData.append("file", file);
+    if (uploadId) {
+      formData.append("upload_id", uploadId);
+    } else if (fileOrNull) {
+      formData.append("file", fileOrNull);
+    }
     formData.append("cpse_code", cpseCode);
     formData.append("mapping_config_json", mappingJson);
     const res = await fetch(`${API_BASE_URL}/ingestion/start-batch`, {
@@ -57,7 +66,14 @@ export const api = {
     }
     return await res.json();
   },
+  getBatchStatus: (batchId: number) => fetchApi<any>(`/ingestion/batch/${batchId}/status`),
   getBatches: () => fetchApi<any[]>("/ingestion/batches"),
+  getSamples: () => fetchApi<Record<string, any>>("/ingestion/samples"),
+  recalculatePreview: (previewRows: any[], mappingConfig: Record<string, string>) =>
+    fetchApi<any>("/ingestion/preview", {
+      method: "POST",
+      body: JSON.stringify({ preview_rows: previewRows, mapping_config: mappingConfig }),
+    }),
 
   // Materials Catalog
   getMaterials: (params: { cpse_code?: string; search?: string; limit?: number } = {}) => {

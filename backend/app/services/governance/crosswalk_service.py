@@ -1,5 +1,7 @@
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 from app.models.models import Crosswalk, CNMCCode, Material, CPSE, GoldenRecord, ProcurementHistory
 
 class CrosswalkService:
@@ -42,7 +44,22 @@ class CrosswalkService:
     @classmethod
     def format_cnmc_detail(cls, db: Session, cnmc: CNMCCode) -> Dict[str, Any]:
         golden = cnmc.golden_record
-        siblings = db.query(Crosswalk).filter(Crosswalk.cnmc_id == cnmc.id).all()
+        # Bulk eager load siblings with material and cpse to eliminate N+1 queries
+        siblings = db.query(Crosswalk).options(
+            joinedload(Crosswalk.material),
+            joinedload(Crosswalk.cpse)
+        ).filter(Crosswalk.cnmc_id == cnmc.id).all()
+
+        # Pre-fetch all procurement records in a single query
+        mat_ids = [sib.material_id for sib in siblings if sib.material_id]
+        proc_records = (
+            db.query(ProcurementHistory)
+            .filter(ProcurementHistory.material_id.in_(mat_ids))
+            .all()
+            if mat_ids else []
+        )
+        proc_map: Dict[int, ProcurementHistory] = {pr.material_id: pr for pr in proc_records}
+
         links = []
         total_vol = 0.0
         total_spend = 0.0
@@ -51,7 +68,7 @@ class CrosswalkService:
         for sib in siblings:
             mat = sib.material
             cpse = sib.cpse
-            proc = db.query(ProcurementHistory).filter(ProcurementHistory.material_id == mat.id).first() if mat else None
+            proc = proc_map.get(mat.id) if mat else None
             price = proc.unit_price if (proc and proc.unit_price is not None) else 0.0
             qty = proc.quantity if (proc and proc.quantity is not None) else 0.0
             multiplier = (mat.package_multiplier if mat and mat.package_multiplier else 1.0) or 1.0
@@ -85,6 +102,9 @@ class CrosswalkService:
                 if p > best_unit_price and v > 0:
                     potential_savings += (p - best_unit_price) * v
 
+        issued_ts = cnmc.issued_at or datetime.now(timezone.utc)
+        created_ts = (golden.created_at if (golden and golden.created_at) else issued_ts)
+
         return {
             "cnmc_code": cnmc.code,
             "golden_record": {
@@ -99,25 +119,58 @@ class CrosswalkService:
                 "end_connection": golden.end_connection if golden else "",
                 "standard_spec": golden.standard_spec if golden else "",
                 "base_uom": golden.base_uom if golden else "EA",
-                "created_at": golden.created_at if golden else None
+                "created_at": created_ts
             },
             "crosswalk_links": links,
             "total_spend": total_spend,
             "total_volume": total_vol,
             "potential_savings": potential_savings,
-            "issued_at": cnmc.issued_at
+            "issued_at": issued_ts
         }
 
     @classmethod
     def reverse_lookup(cls, db: Session, local_code: str, cpse_code: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        query = db.query(Crosswalk).join(Material).join(CPSE).join(CNMCCode).join(GoldenRecord)
-        
-        if cpse_code:
-            query = query.filter(CPSE.code == cpse_code.upper())
-            
-        cw_entry = query.filter(Crosswalk.local_material_code == local_code).first()
-        if not cw_entry or not cw_entry.cnmc:
+        query_str = local_code.strip()
+        if not query_str:
             return None
 
-        return cls.format_cnmc_detail(db, cw_entry.cnmc)
+        # 1. Bidirectional Check: Did the user provide a National CNMC Code?
+        if query_str.upper().startswith("CNMC-"):
+            cnmc_direct = (
+                db.query(CNMCCode)
+                .options(joinedload(CNMCCode.golden_record))
+                .filter(func.upper(CNMCCode.code) == query_str.upper())
+                .first()
+            )
+            if cnmc_direct:
+                return cls.format_cnmc_detail(db, cnmc_direct)
+
+        # 2. Local Material Code Lookup with Eager Relationships
+        query = (
+            db.query(Crosswalk)
+            .options(
+                joinedload(Crosswalk.cnmc).joinedload(CNMCCode.golden_record),
+                joinedload(Crosswalk.material),
+                joinedload(Crosswalk.cpse)
+            )
+        )
+        
+        if cpse_code:
+            query = query.join(Crosswalk.cpse).filter(func.upper(CPSE.code) == cpse_code.upper())
+            
+        cw_entry = query.filter(func.upper(Crosswalk.local_material_code) == query_str.upper()).first()
+        if cw_entry and cw_entry.cnmc:
+            return cls.format_cnmc_detail(db, cw_entry.cnmc)
+
+        # 3. Fallback: Check if query matches a CNMC code without "CNMC-" prefix
+        cnmc_fallback = (
+            db.query(CNMCCode)
+            .options(joinedload(CNMCCode.golden_record))
+            .filter(func.upper(CNMCCode.code) == query_str.upper())
+            .first()
+        )
+        if cnmc_fallback:
+            return cls.format_cnmc_detail(db, cnmc_fallback)
+
+        return None
 
