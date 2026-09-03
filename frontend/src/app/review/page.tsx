@@ -21,16 +21,22 @@ export default function ReviewQueuePage() {
   const [reviewerNotes, setReviewerNotes] = useState<string>("");
   const [selectedRelationship, setSelectedRelationship] = useState<string>("IDENTICAL");
   const [selectedMaterialIds, setSelectedMaterialIds] = useState<number[]>([]);
+  const [page, setPage] = useState<number>(0);
+  const pageSize = 25;
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
-  const loadQueue = async () => {
+  const loadQueue = async (targetPage = page) => {
     setLoading(true);
     try {
-      const items = await api.getReviewQueue("PENDING");
+      const items = await api.getReviewQueue({
+        statusFilter: "PENDING",
+        limit: pageSize,
+        offset: targetPage * pageSize,
+      });
       setQueueItems(items);
-      if (items.length > 0 && !selectedClusterId) {
+      if (items.length > 0 && (!selectedClusterId || !items.some(i => i.cluster_group_id === selectedClusterId))) {
         setSelectedClusterId(items[0].cluster_group_id);
       }
     } catch (err) {
@@ -41,7 +47,7 @@ export default function ReviewQueuePage() {
   };
 
   useEffect(() => {
-    loadQueue();
+    loadQueue(0);
   }, []);
 
   useEffect(() => {
@@ -145,7 +151,7 @@ export default function ReviewQueuePage() {
           )}
 
           <button
-            onClick={loadQueue}
+            onClick={() => loadQueue()}
             className="flex items-center space-x-1.5 px-3.5 py-2 glass-input hover:bg-zinc-800 text-zinc-300 rounded-xl text-xs font-medium apple-press transition"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -213,6 +219,39 @@ export default function ReviewQueuePage() {
               );
             })
           )}
+
+          {/* Pagination Controls */}
+          <div className="flex items-center justify-between pt-3 border-t border-white/[0.06] text-xs">
+            <button
+              onClick={() => {
+                if (page > 0) {
+                  const newPage = page - 1;
+                  setPage(newPage);
+                  loadQueue(newPage);
+                }
+              }}
+              disabled={page === 0 || loading}
+              className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 border border-white/[0.06] text-[11px] font-medium transition"
+            >
+              Previous
+            </button>
+            <span className="text-[10px] text-zinc-400 font-mono">
+              Page {page + 1}
+            </span>
+            <button
+              onClick={() => {
+                if (queueItems.length === pageSize) {
+                  const newPage = page + 1;
+                  setPage(newPage);
+                  loadQueue(newPage);
+                }
+              }}
+              disabled={queueItems.length < pageSize || loading}
+              className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 border border-white/[0.06] text-[11px] font-medium transition"
+            >
+              Next
+            </button>
+          </div>
         </div>
 
         {/* Right 3 Columns: 3-Way Cluster Card Review Screen */}

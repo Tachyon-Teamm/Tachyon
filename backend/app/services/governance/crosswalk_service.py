@@ -50,15 +50,19 @@ class CrosswalkService:
             joinedload(Crosswalk.cpse)
         ).filter(Crosswalk.cnmc_id == cnmc.id).all()
 
-        # Pre-fetch all procurement records in a single query
+        # Pre-fetch all procurement records in a single query, ordered by most recent PO date
         mat_ids = [sib.material_id for sib in siblings if sib.material_id]
         proc_records = (
             db.query(ProcurementHistory)
             .filter(ProcurementHistory.material_id.in_(mat_ids))
+            .order_by(ProcurementHistory.po_date.desc().nullslast(), ProcurementHistory.id.desc())
             .all()
             if mat_ids else []
         )
-        proc_map: Dict[int, ProcurementHistory] = {pr.material_id: pr for pr in proc_records}
+        proc_map: Dict[int, ProcurementHistory] = {}
+        for pr in proc_records:
+            if pr.material_id not in proc_map:
+                proc_map[pr.material_id] = pr
 
         links = []
         total_vol = 0.0
@@ -153,6 +157,7 @@ class CrosswalkService:
                 joinedload(Crosswalk.material),
                 joinedload(Crosswalk.cpse)
             )
+            .filter(Crosswalk.is_active == True)
         )
         
         if cpse_code:

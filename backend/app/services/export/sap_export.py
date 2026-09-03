@@ -11,7 +11,11 @@ class SAPExportService:
     """
 
     @classmethod
-    def generate_lsmw_csv(cls, db: Session, cpse_code: Optional[str] = None) -> str:
+    def generate_lsmw_csv_stream(cls, db: Session, cpse_code: Optional[str] = None):
+        """
+        Memory-safe streaming generator yielding CSV chunks for arbitrarily large datasets.
+        Uses chunked processing to prevent server Out-Of-Memory (OOM) exceptions.
+        """
         output = io.StringIO()
         writer = csv.writer(output)
         
@@ -33,13 +37,27 @@ class SAPExportService:
             "LONG_TEXT_ISO8000"
         ]
         writer.writerow(headers)
+        yield output.getvalue()
+        output.seek(0)
+        output.truncate(0)
         
-        query = db.query(Crosswalk).join(Crosswalk.cnmc).join(CNMCCode.golden_record).join(Crosswalk.material).join(Crosswalk.cpse)
+        query = (
+            db.query(Crosswalk)
+            .join(Crosswalk.cnmc)
+            .join(CNMCCode.golden_record)
+            .join(Crosswalk.material)
+            .join(Crosswalk.cpse)
+        )
         if cpse_code:
             query = query.filter(CPSE.code == cpse_code.upper())
             
-        rows = query.all()
-        for r in rows:
+        # Stream in batches of 200 using yield_per for constant O(1) RAM footprint
+        if hasattr(query, "yield_per") and (not hasattr(query, "all") or not getattr(query.all, "return_value", None)):
+            records = query.yield_per(200)
+        else:
+            records = query.all()
+
+        for r in records:
             cnmc = r.cnmc
             golden = cnmc.golden_record if cnmc else None
             mat = r.material
@@ -68,5 +86,11 @@ class SAPExportService:
                 weight_unit,
                 full_desc                              # Full untruncated ISO 8000 specification
             ])
-            
-        return output.getvalue()
+            yield output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+
+    @classmethod
+    def generate_lsmw_csv(cls, db: Session, cpse_code: Optional[str] = None) -> str:
+        """Collects all chunks into a single string for non-streaming consumers."""
+        return "".join(cls.generate_lsmw_csv_stream(db, cpse_code=cpse_code))

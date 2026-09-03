@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { api, API_BASE_URL } from "@/lib/api";
 import { 
   Layers, 
@@ -13,9 +13,24 @@ import {
 export default function CrosswalkPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCPSE, setSelectedCPSE] = useState("");
+  const [availableCpses, setAvailableCpses] = useState<{ id: number; code: string; name: string }[]>([]);
   const [lookupResult, setLookupResult] = useState<any>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    api.getCpses()
+      .then((data) => {
+        if (isMounted && Array.isArray(data) && data.length > 0) {
+          setAvailableCpses(data);
+        }
+      })
+      .catch((err) => {
+        console.warn("[Crosswalk] Failed to load dynamic CPSE list:", err);
+      });
+    return () => { isMounted = false; };
+  }, []);
 
   const handleSearch = async (e?: React.FormEvent, overrideCode?: string, overrideCPSE?: string) => {
     if (e) e.preventDefault();
@@ -62,18 +77,29 @@ export default function CrosswalkPage() {
           <button
             onClick={() => handleExportCSV(selectedCPSE || undefined)}
             className="flex items-center space-x-2 px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-100 border border-zinc-700 rounded-xl text-xs font-semibold apple-press transition"
+            title={selectedCPSE ? `Export SAP LSMW CSV filtered for ${selectedCPSE}` : "Export National SAP LSMW CSV across all entities"}
           >
             <Download className="h-4 w-4" />
-            <span>Export SAP LSMW CSV</span>
+            <span>{selectedCPSE ? `Export ${selectedCPSE} SAP CSV` : "Export National SAP CSV"}</span>
           </button>
         </div>
       </div>
 
       {/* Error Alert Banner */}
       {errorMessage && (
-        <div className="flex items-center space-x-3 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-xs">
-          <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
-          <span>{errorMessage}</span>
+        <div className="flex items-center justify-between p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-xs">
+          <div className="flex items-center space-x-3">
+            <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+            <span>{errorMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setErrorMessage(null)}
+            className="text-red-400 hover:text-red-200 text-xs font-bold px-2 py-0.5 rounded transition"
+            title="Dismiss error"
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -101,18 +127,11 @@ export default function CrosswalkPage() {
               className="w-full glass-input text-white rounded-xl px-3.5 py-2.5 text-xs font-medium focus:outline-none"
             >
               <option value="">All Entities / Nationwide</option>
-              <optgroup label="Oil & Gas">
-                <option value="CPCL">CPCL</option>
-                <option value="IOCL">IOCL</option>
-                <option value="BPCL">BPCL</option>
-                <option value="ONGC">ONGC</option>
-              </optgroup>
-              <optgroup label="Power, Steel & Heavy Eng">
-                <option value="NTPC">NTPC</option>
-                <option value="SAIL">SAIL</option>
-                <option value="COALINDIA">Coal India</option>
-                <option value="BHEL">BHEL</option>
-              </optgroup>
+              {availableCpses.map((cpse) => (
+                <option key={cpse.code} value={cpse.code}>
+                  {cpse.code} {cpse.name ? `(${cpse.name})` : ""}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -127,44 +146,6 @@ export default function CrosswalkPage() {
             </button>
           </div>
         </form>
-
-        {/* Quick Demo Chips */}
-        <div className="flex items-center space-x-2 text-[11px] text-zinc-400 pt-1">
-          <span>Quick Demo:</span>
-          <button
-            type="button"
-            onClick={() => {
-              setSearchQuery("100234");
-              setSelectedCPSE("CPCL");
-              handleSearch(undefined, "100234", "CPCL");
-            }}
-            className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg font-mono text-[10px] border border-white/[0.08] apple-press"
-          >
-            100234 (CPCL Gate Valve)
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setSearchQuery("889102");
-              setSelectedCPSE("IOCL");
-              handleSearch(undefined, "889102", "IOCL");
-            }}
-            className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg font-mono text-[10px] border border-white/[0.08] apple-press"
-          >
-            889102 (IOCL Gate Valve)
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setSearchQuery("100888");
-              setSelectedCPSE("CPCL");
-              handleSearch(undefined, "100888", "CPCL");
-            }}
-            className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg font-mono text-[10px] border border-white/[0.08] apple-press"
-          >
-            100888 (CPCL 4" Pipe)
-          </button>
-        </div>
       </div>
 
       {/* Lookup Details Card */}
@@ -232,11 +213,29 @@ export default function CrosswalkPage() {
                           </span>
                         </td>
                         <td className="py-3.5 px-4 font-mono font-bold text-white">
-                          {link.local_material_code}
-                          {isQueried && (
-                            <span className="ml-2 text-[10px] text-zinc-400 font-sans font-medium">
-                              (Queried Code)
-                            </span>
+                          {isQueried ? (
+                            <div className="flex items-center">
+                              <span>{link.local_material_code}</span>
+                              <span className="ml-2 px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-white/[0.08] text-[10px] font-sans font-medium">
+                                (Queried Code)
+                              </span>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSearchQuery(link.local_material_code);
+                                setSelectedCPSE(link.cpse_code);
+                                handleSearch(undefined, link.local_material_code, link.cpse_code);
+                              }}
+                              className="text-left font-mono hover:text-blue-400 hover:underline transition-colors flex items-center group cursor-pointer"
+                              title={`Click to pivot search to ${link.cpse_code} code: ${link.local_material_code}`}
+                            >
+                              <span>{link.local_material_code}</span>
+                              <span className="ml-2 text-[10px] text-zinc-500 group-hover:text-blue-400 font-sans font-normal">
+                                (Click to query)
+                              </span>
+                            </button>
                           )}
                         </td>
                         <td className="py-3.5 px-4 text-zinc-300 font-mono text-[11px]">{link.short_description}</td>

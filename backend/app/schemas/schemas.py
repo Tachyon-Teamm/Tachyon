@@ -30,6 +30,7 @@ class CPSEResponse(BaseModel):
     id: int
     code: str
     name: str
+    sector: Optional[str] = "GENERAL"
 
     class Config:
         from_attributes = True
@@ -118,6 +119,13 @@ class MaterialResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class PaginatedMaterialResponse(BaseModel):
+    items: List[MaterialResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 # ----------------- Matching & Scoring -----------------
 class MatchJobResponse(BaseModel):
