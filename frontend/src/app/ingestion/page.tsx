@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { 
@@ -11,46 +11,13 @@ import {
   RefreshCw,
   FileCheck2,
   Clock,
-  History
+  History,
+  Layers
 } from "lucide-react";
 
-const REAL_SAMPLE_CSVS: Record<string, string> = {
-  CPCL: `MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE
-100234,VLV GATE 6IN 300# CS FLG,Nos,12500.0,L&T Valves Ltd,84818030
-100888,PIPE CS SMLS 4" SCH 40 ASTM A106,MTR,2450.0,Jindal Saw Ltd,73041910
-100999,VALVE 2" 150# CS FLG,EA,4200.0,L&T Valves,84818030
-100501,BEARING 6205-2RS1 SKF,EA,850.0,SKF India Ltd,84821010
-100777,MECH SEAL CARTRIDGE PUMP P-101A (SET),SET,45000.0,Flowserve India,84841000
-100612,GREASE MOBILITH SHC 100 - 18KG BUCKET,BKT,11700.0,ExxonMobil,27101980
-100333,GASKET SPIRAL WOUND 4" 300# CS/SS,Nos,480.0,Champion Seals Ltd,84841000
-100444,FLANGE 6" 300# WNRF ANSI B16.5 CS,Nos,3200.0,EIL Approved Vendor,73072100`,
-  IOCL: `MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE
-889102,VALVE, GATE, 150MM, CL300, WCB,EA,10800.0,Larsen & Toubro Ltd - Valve Div,84818030
-889555,PIPE CS 4" SCH 80 A106,M,3800.0,Maharashtra Seamless,73041910
-889999,VALVE 2" 300# CS FLG,EA,6800.0,L&T Valves,84818030
-889501,SKF BEARING NO. 6205 2RS1 / C3,EA,920.0,SKF Bearings,84821010
-889777,ROTARY SEAL RING FOR PUMP P-101A,EA,8500.0,Flowserve,84841000
-889612,GREASE MOBILITH SHC 100,KG,630.0,Mobil Oil,27101980
-889333,4" SPIRAL GASKET JAALI WALA 300#,EA,450.0,Champion Seals,84841000
-889444,FLANGE 6" 300# WNRF ASME B16.5 A105,EA,3100.0,Engineers India Ltd Vendor,73072100`,
-  BPCL: `MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE
-445511,6 INCH GATE VALVE FLANGED 300#,Numbers,11200.0,Microfinish Valves,84818030
-445888,4 INCH SEAMLESS PIPE SCH40 A106,MTR,2520.0,Jindal Saw,73041910
-445501,BRG SKF 6205-2RS1,PCS,870.0,SKF,84821010
-445612,MOBILITH SHC 100 - 180KG DRUM,DRM,108000.0,ExxonMobil,27101980
-445333,GASKET SPIRAL 4 INCH 300#,EA,460.0,Champion,84841000`,
-  NTPC: `MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE
-770101,TRANSFORMER 33KV / 11KV 10MVA ONAN,EA,4200000.0,BHEL,85042300
-770202,HT XLPE CABLE 3 CORE 11KV 300 SQMM,MTR,1850.0,Polycab India,85446090
-770303,VACUUM CIRCUIT BREAKER 11KV 1250A 25KA,EA,310000.0,ABB India,85352190`,
-  SAIL: `MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE
-990101,TMT REBAR FE 500D 16MM DIA IS 1786,MT,54000.0,SAIL Plants,72142090
-990202,HIGH ALUMINA REFRACTORY BRICK 70% AL2O3,MT,32000.0,TRL Krosaki,69022020
-990303,CONVEYOR BELTING 1200MM WIDTH 1000/4 GRADE M,MTR,4500.0,Fenner India,40101200`
-};
-
-
 export default function IngestionPage() {
+  const [cpses, setCpses] = useState<{ id: number; code: string; name: string; sector?: string }[]>([]);
+  const [batches, setBatches] = useState<any[]>([]);
   const [selectedCPSE, setSelectedCPSE] = useState<string>("IOCL");
   const [file, setFile] = useState<File | null>(null);
   const [uploadId, setUploadId] = useState<string | null>(null);
@@ -61,7 +28,6 @@ export default function IngestionPage() {
   const [batchResult, setBatchResult] = useState<any>(null);
   const [progressInfo, setProgressInfo] = useState<{ id: number; processed: number; total: number; percent: number; status: string } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [batches, setBatches] = useState<any[]>([]);
   const [batchesLoading, setBatchesLoading] = useState<boolean>(true);
 
   const loadBatches = async () => {
@@ -79,6 +45,63 @@ export default function IngestionPage() {
   useEffect(() => {
     loadBatches();
   }, []);
+
+  const loadCpsesAndBatches = useCallback(async () => {
+    try {
+      const [cpseList, batchList] = await Promise.all([
+        api.getCpses().catch(() => []),
+        api.getBatches().catch(() => [])
+      ]);
+      if (cpseList && cpseList.length > 0) {
+        setCpses(cpseList);
+      }
+      if (batchList) {
+        setBatches(batchList);
+      }
+    } catch (err) {
+      console.error("Initial load error:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadCpsesAndBatches();
+  }, [loadCpsesAndBatches]);
+
+  // Periodic polling for active background batch executions
+  useEffect(() => {
+    const hasActive = batches.some((b) => b.status === "PENDING" || b.status === "PROCESSING");
+    if (!hasActive && progressInfo?.status !== "PROCESSING") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const updated = await api.getBatches();
+        setBatches(updated);
+      } catch (e) {
+        // silent background poll error
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [batches, progressInfo]);
+
+  const handleCPSEChange = async (newCPSE: string) => {
+    setSelectedCPSE(newCPSE);
+    if (file) {
+      setIsDetecting(true);
+      setErrorMsg(null);
+      setBatchResult(null);
+      try {
+        const res = await api.detectColumns(file, newCPSE);
+        setDetectData(res);
+        setUploadId(res.upload_id || null);
+        setMappingConfig(res.suggested_mappings || {});
+      } catch (err: any) {
+        setErrorMsg(err.message || "Failed to re-detect columns for selected refinery");
+      } finally {
+        setIsDetecting(false);
+      }
+    }
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -112,23 +135,23 @@ export default function IngestionPage() {
     setProgressInfo(null);
     setUploadId(null);
     try {
-      let csvContent = REAL_SAMPLE_CSVS[cpse] || REAL_SAMPLE_CSVS["IOCL"];
-      try {
-        const remoteSamples = await api.getSamples();
-        if (remoteSamples && remoteSamples[cpse]) {
-          csvContent = remoteSamples[cpse];
-        }
-      } catch (e) {
-        // Fallback to embedded REAL_SAMPLE_CSVS
+      const samples = await api.getSamples();
+      const sampleItem = samples?.[cpse] || samples?.["IOCL"];
+      if (!sampleItem || !sampleItem.content) {
+        throw new Error(`Sample extract for ${cpse} not found on server.`);
       }
-      const realFile = new File([csvContent], `${cpse.toLowerCase()}_sample_extract.csv`, { type: "text/csv" });
+      const realFile = new File(
+        [sampleItem.content], 
+        sampleItem.filename || `${cpse.toLowerCase()}_sample_extract.csv`, 
+        { type: "text/csv" }
+      );
       setFile(realFile);
       const res = await api.detectColumns(realFile, cpse);
       setDetectData(res);
       setUploadId(res.upload_id || null);
       setMappingConfig(res.suggested_mappings || {});
     } catch (err: any) {
-      setErrorMsg(err.message || "Failed to load sample");
+      setErrorMsg(err.message || "Failed to load sample from server");
     } finally {
       setIsDetecting(false);
     }
@@ -194,6 +217,9 @@ export default function IngestionPage() {
         status: res.status || "PROCESSING"
       });
 
+      // Instantly refresh batch history
+      api.getBatches().then(setBatches).catch(() => {});
+
       // Poll background worker progress
       const pollTimer = setInterval(async () => {
         try {
@@ -252,21 +278,42 @@ export default function IngestionPage() {
             <label className="text-xs font-medium text-zinc-300 block mb-1.5">Target CPSE Entity</label>
             <select
               value={selectedCPSE}
-              onChange={(e) => setSelectedCPSE(e.target.value)}
+              onChange={(e) => handleCPSEChange(e.target.value)}
               className="w-full glass-input text-white rounded-xl px-3.5 py-2.5 text-xs font-medium focus:outline-none"
             >
-              <optgroup label="Oil & Gas">
-                <option value="CPCL">CPCL (Chennai Petroleum Corporation Ltd)</option>
-                <option value="IOCL">IOCL (Indian Oil Corporation Ltd)</option>
-                <option value="BPCL">BPCL (Bharat Petroleum Corporation Ltd)</option>
-                <option value="ONGC">ONGC (Oil and Natural Gas Corp)</option>
-              </optgroup>
-              <optgroup label="Power & Steel & Mining">
-                <option value="NTPC">NTPC (Power Generation Ltd)</option>
-                <option value="SAIL">SAIL (Steel Authority of India Ltd)</option>
-                <option value="COALINDIA">Coal India (Mining & Minerals)</option>
-                <option value="BHEL">BHEL (Heavy Electricals Ltd)</option>
-              </optgroup>
+              {cpses.length > 0 ? (
+                Object.entries(
+                  cpses.reduce((acc, c) => {
+                    const sec = c.sector ? c.sector.replace(/_/g, " ") : "GENERAL";
+                    acc[sec] = acc[sec] || [];
+                    acc[sec].push(c);
+                    return acc;
+                  }, {} as Record<string, typeof cpses>)
+                ).map(([sec, group]) => (
+                  <optgroup key={sec} label={sec}>
+                    {group.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.code} ({c.name})
+                      </option>
+                    ))}
+                  </optgroup>
+                ))
+              ) : (
+                <>
+                  <optgroup label="Oil & Gas">
+                    <option value="CPCL">CPCL (Chennai Petroleum Corporation Ltd)</option>
+                    <option value="IOCL">IOCL (Indian Oil Corporation Ltd)</option>
+                    <option value="BPCL">BPCL (Bharat Petroleum Corporation Ltd)</option>
+                    <option value="ONGC">ONGC (Oil and Natural Gas Corp)</option>
+                  </optgroup>
+                  <optgroup label="Power & Steel & Mining">
+                    <option value="NTPC">NTPC (Power Generation Ltd)</option>
+                    <option value="SAIL">SAIL (Steel Authority of India Ltd)</option>
+                    <option value="COALINDIA">Coal India (Mining & Minerals)</option>
+                    <option value="BHEL">BHEL (Heavy Electricals Ltd)</option>
+                  </optgroup>
+                </>
+              )}
             </select>
           </div>
 
@@ -361,16 +408,25 @@ export default function IngestionPage() {
         )}
 
         {batchResult && (
-          <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs rounded-xl flex items-center space-x-2.5">
-            <CheckCircle2 className="h-5 w-5 text-emerald-400 flex-shrink-0" />
-            <div>
-              <span className="font-bold block text-emerald-200">
-                Batch Ingestion Completed Successfully
-              </span>
-              <span className="text-[11px] text-emerald-300/80">
-                Batch #{batchResult.id} for {batchResult.cpse_code} processed {batchResult.total_rows} records into active catalog.
-              </span>
+          <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs rounded-xl flex items-center justify-between">
+            <div className="flex items-center space-x-2.5">
+              <CheckCircle2 className="h-5 w-5 text-emerald-400 flex-shrink-0" />
+              <div>
+                <span className="font-bold block text-emerald-200">
+                  Batch Ingestion Completed Successfully
+                </span>
+                <span className="text-[11px] text-emerald-300/80">
+                  Batch #{batchResult.id} for {batchResult.cpse_code} processed {batchResult.total_rows} records into active catalog.
+                </span>
+              </div>
             </div>
+            <Link
+              href="/materials"
+              className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 rounded-lg text-xs font-semibold transition"
+            >
+              <span>View In Catalog</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
           </div>
         )}
       </div>
@@ -610,13 +666,16 @@ export default function IngestionPage() {
               Audit record of ERP batches loaded, data completeness, and profiling quality scores.
             </p>
           </div>
-          <button
-            onClick={loadBatches}
-            className="flex items-center space-x-1.5 px-3 py-1.5 glass-input hover:bg-zinc-800 text-zinc-300 rounded-xl text-xs font-medium apple-press transition"
-          >
-            <RefreshCw className={`h-3 w-3 ${batchesLoading ? "animate-spin" : ""}`} />
-            <span>Refresh</span>
-          </button>
+          <div className="flex items-center space-x-3">
+            <span className="text-[11px] text-zinc-500">{batches.length} total batches</span>
+            <button
+              onClick={loadBatches}
+              className="flex items-center space-x-1.5 px-3 py-1.5 glass-input hover:bg-zinc-800 text-zinc-300 rounded-xl text-xs font-medium apple-press transition"
+            >
+              <RefreshCw className={`h-3 w-3 ${batchesLoading ? "animate-spin" : ""}`} />
+              <span>Refresh</span>
+            </button>
+          </div>
         </div>
 
         <div className="overflow-x-auto">

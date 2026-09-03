@@ -1,9 +1,20 @@
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
+function getAuthHeaders(): Record<string, string> {
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("token");
+    if (token) {
+      return { Authorization: `Bearer ${token}` };
+    }
+  }
+  return {};
+}
+
 export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
   const headers = {
     "Content-Type": "application/json",
+    ...getAuthHeaders(),
     ...options.headers,
   };
 
@@ -28,12 +39,14 @@ export const api = {
   getVennOverlap: () => fetchApi<any>("/analytics/venn-overlap"),
 
   // Ingestion
+  getCpses: () => fetchApi<{ id: number; code: string; name: string; sector?: string }[]>("/ingestion/cpses"),
   detectColumns: async (file: File, cpseCode: string) => {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("cpse_code", cpseCode);
     const res = await fetch(`${API_BASE_URL}/ingestion/detect-columns`, {
       method: "POST",
+      headers: getAuthHeaders(),
       body: formData,
     });
     if (!res.ok) {
@@ -58,6 +71,7 @@ export const api = {
     formData.append("mapping_config_json", mappingJson);
     const res = await fetch(`${API_BASE_URL}/ingestion/start-batch`, {
       method: "POST",
+      headers: getAuthHeaders(),
       body: formData,
     });
     if (!res.ok) {
@@ -76,19 +90,54 @@ export const api = {
     }),
 
   // Materials Catalog
-  getMaterials: (params: { cpse_code?: string; search?: string; limit?: number } = {}) => {
+  getMaterials: (params: { cpse_code?: string; search?: string; item_noun?: string; page?: number; page_size?: number; limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams();
     if (params.cpse_code) q.append("cpse_code", params.cpse_code);
     if (params.search) q.append("search", params.search);
+    if (params.item_noun) q.append("item_noun", params.item_noun);
+    if (params.page) q.append("page", params.page.toString());
+    if (params.page_size) q.append("page_size", params.page_size.toString());
     if (params.limit) q.append("limit", params.limit.toString());
-    return fetchApi<any[]>(`/materials?${q.toString()}`);
+    if (params.offset !== undefined) q.append("offset", params.offset.toString());
+    return fetchApi<{
+      items: any[];
+      total: number;
+      page: number;
+      page_size: number;
+      total_pages: number;
+    }>(`/materials?${q.toString()}`);
   },
   getMaterialDetail: (materialId: number) => fetchApi<any>(`/materials/${materialId}`),
+  getRefineries: () => fetchApi<{ id: number; code: string; name: string }[]>("/materials/refineries/list"),
 
   // Matching Engine & Review Queue
   triggerMatching: () => fetchApi<any>("/matching/trigger", { method: "POST" }),
-  getReviewQueue: (statusFilter = "PENDING") =>
-    fetchApi<any[]>(`/review/queue?status_filter=${statusFilter}`),
+  getReviewQueue: (
+    params:
+      | string
+      | {
+          statusFilter?: string;
+          confidenceTier?: string;
+          limit?: number;
+          offset?: number;
+        } = "PENDING"
+  ) => {
+    let sf = "PENDING";
+    let ct: string | undefined;
+    let lim = 50;
+    let off = 0;
+    if (typeof params === "string") {
+      sf = params;
+    } else if (params) {
+      if (params.statusFilter) sf = params.statusFilter;
+      if (params.confidenceTier) ct = params.confidenceTier;
+      if (params.limit !== undefined) lim = params.limit;
+      if (params.offset !== undefined) off = params.offset;
+    }
+    const q = new URLSearchParams({ status_filter: sf, limit: lim.toString(), offset: off.toString() });
+    if (ct) q.append("confidence_tier", ct);
+    return fetchApi<any[]>(`/review/queue?${q.toString()}`);
+  },
   getClusterDetails: (clusterGroupId: string) =>
     fetchApi<any>(`/review/cluster/${clusterGroupId}`),
   executeReviewAction: (actionData: {

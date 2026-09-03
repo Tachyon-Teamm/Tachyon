@@ -8,7 +8,7 @@ from app.core.database import get_db, get_sync_db, get_sync_session
 from app.core.security import get_current_user, TokenData
 from app.models.models import (
     ReviewQueue, MatchCandidate, Material, CPSE, ProcurementHistory,
-    GoldenRecord, CNMCCode, Crosswalk, AuditLog, ReviewFeedback
+    GoldenRecord, CNMCCode, Crosswalk, AuditLog, ReviewFeedback, TaxonomyCategory
 )
 from app.schemas.schemas import (
     ClusterCardResponse, ClusterMaterialItem, ScoreBreakdown,
@@ -25,6 +25,8 @@ router = APIRouter(prefix="/review", tags=["Review Queue & Governance"])
 async def get_review_queue(
     status_filter: Optional[str] = "PENDING",
     confidence_tier: Optional[str] = None,
+    limit: Optional[int] = 50,
+    offset: Optional[int] = 0,
     db: Session = Depends(get_db)
 ):
     query = select(ReviewQueue)
@@ -34,6 +36,11 @@ async def get_review_queue(
         query = query.filter(ReviewQueue.confidence_tier == confidence_tier.upper())
         
     query = query.order_by(ReviewQueue.id.desc())
+    if limit is not None and limit > 0:
+        query = query.limit(limit)
+    if offset is not None and offset > 0:
+        query = query.offset(offset)
+        
     res = await db.execute(query)
     items = res.scalars().all()
     
@@ -182,10 +189,23 @@ async def get_cluster_details(cluster_group_id: str, db: Session = Depends(get_d
     review_res = await db.execute(select(ReviewQueue).filter(ReviewQueue.cluster_group_id == cluster_group_id))
     review = review_res.scalars().first()
 
+    cat_name = "Industrial Materials"
+    if review and review.category_code:
+        cat_res = await db.execute(select(TaxonomyCategory).filter(TaxonomyCategory.unspsc_code == review.category_code))
+        cat_obj = cat_res.scalars().first()
+        if cat_obj:
+            cat_name = cat_obj.name
+        elif materials and materials[0].item_noun:
+            cat_name = f"{materials[0].item_noun} Category"
+        else:
+            cat_name = f"{review.category_code} Category"
+    elif materials and materials[0].item_noun:
+        cat_name = f"{materials[0].item_noun} Category"
+
     return ClusterCardResponse(
         cluster_group_id=cluster_group_id,
         category_code=review.category_code if review else "VALVES",
-        category_name="Refinery Flow Control & Mechanical",
+        category_name=cat_name,
         confidence_tier=review.confidence_tier if review else "HIGH",
         composite_score=scores.composite_score,
         scores=scores,
