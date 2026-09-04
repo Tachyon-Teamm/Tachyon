@@ -389,5 +389,89 @@ class TestUniMMCore(unittest.TestCase):
         # Material 3 must NOT be in the cluster
         self.assertNotIn(3, res["material_to_cluster"])
 
+    def test_scientific_price_sanitizer(self):
+        from app.tasks.ingestion_tasks import sanitize_price
+        self.assertEqual(sanitize_price("1.25e+04"), 12500.0)
+        self.assertEqual(sanitize_price("1.25E+04"), 12500.0)
+        self.assertEqual(sanitize_price("1.25e-2"), 0.0125)
+        self.assertEqual(sanitize_price("-500.50"), -500.5)
+        self.assertEqual(sanitize_price("₹ 1.25e+04"), 12500.0)
+
+    def test_packaging_multiplier_price_normalization(self):
+        # 18kg bucket @ 11,700 (₹650/kg) vs per-KG @ ₹630
+        proc_bucket = {"unit_price": 11700.0, "package_multiplier": 18.0, "vendor_normalized": "EXXONMOBIL"}
+        proc_kg = {"unit_price": 630.0, "package_multiplier": 1.0, "vendor_normalized": "EXXONMOBIL"}
+
+        score = CompositeScorer.calculate_procurement_score(proc_bucket, proc_kg)
+        # Normalized prices are 650.0 vs 630.0 (ratio ~0.969 -> +0.30 price band + 0.50 vendor + 0.10 neutral hsn = 0.90)
+        self.assertGreaterEqual(score, 0.85)
+
+        # 180kg drum @ 108,000 (₹600/kg) vs 18kg bucket @ 11,700 (₹650/kg)
+        proc_drum = {"unit_price": 108000.0, "package_multiplier": 180.0, "vendor_normalized": "EXXONMOBIL"}
+        score_drum_bucket = CompositeScorer.calculate_procurement_score(proc_drum, proc_bucket)
+        # 600.0 vs 650.0 (ratio ~0.923 -> +0.30 price band)
+        self.assertGreaterEqual(score_drum_bucket, 0.85)
+
+    def test_pivot_clustering_transitive_veto_exclusion(self):
+        # Node 1 is compatible with Node 2 (score 0.90)
+        # Node 2 is compatible with Node 3 (score 0.90)
+        # But Node 1 and Node 3 are incompatible / vetoed (e.g. 150# vs 300#)
+        nodes = [1, 2, 3]
+        pos_edges = {(1, 2): 0.90, (2, 3): 0.90}
+        neg_edges = {(1, 3)}
+
+        clusters = ClusterEngine.correlation_clustering_pivot(
+            nodes=nodes,
+            positive_edges=pos_edges,
+            negative_edges=neg_edges,
+            threshold=0.70
+        )
+
+        # Node 1 and Node 3 must NEVER end up in the same cluster
+        for c_id, members in clusters.items():
+            self.assertFalse(1 in members and 3 in members, f"Incompatible nodes 1 and 3 were merged in {c_id}: {members}")
+
+    def test_singleton_promotion_synthesis(self):
+        from unittest.mock import MagicMock
+        from app.models.models import Material, Crosswalk, ReviewQueue, MatchCandidate, GoldenRecord, CNMCCode
+
+        mock_db = MagicMock()
+        # No existing crosswalks or pending review clusters
+        mock_db.query.return_value.filter.return_value.all.return_value = []
+        mock_db.query.return_value.all.return_value = []
+        mock_db.query.return_value.scalar.return_value = 100
+
+        mat = Material(
+            id=999,
+            cpse_id=1,
+            material_code="CPCL-VALVE-001",
+            short_description="VLV GATE 6IN 300# CS FLG",
+            item_noun="VALVE, GATE",
+            nominal_size="6 INCH (150 MM)",
+            pressure_class="CLASS 300#",
+            moc="ASTM A216 WCB",
+            status="ACTIVE"
+        )
+
+        # Setup query to return our single material
+        def query_side_effect(model, *args):
+            mock_q = MagicMock()
+            mock_q.filter.return_value = mock_q
+            if model is Material:
+                mock_q.all.return_value = [mat]
+            elif model is CNMCCode:
+                mock_q.first.return_value = CNMCCode(code="CNMC-00000100-2", id=1)
+            else:
+                mock_q.all.return_value = []
+                mock_q.first.return_value = None
+            return mock_q
+
+        mock_db.query.side_effect = query_side_effect
+
+        res = GoldenRecordService.promote_singleton_materials(mock_db, cpse_id=1)
+        self.assertEqual(res["status"], "SUCCESS")
+        self.assertEqual(res["promoted_count"], 1)
+        self.assertEqual(res["items"][0]["material_id"], 999)
+
 if __name__ == "__main__":
     unittest.main()

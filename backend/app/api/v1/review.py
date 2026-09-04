@@ -140,6 +140,9 @@ async def get_cluster_details(cluster_group_id: str, db: Session = Depends(get_d
             clean_part_number=m.clean_part_number,
             clearance_suffix=m.clearance_suffix,
             is_kit_or_assembly=m.is_kit_or_assembly,
+            category_code=m.category_code,
+            category_confidence=m.category_confidence,
+            predicted_category_name=m.predicted_category_name,
             status=m.status,
             last_po_price=proc.unit_price if proc else None,
             vendor_name=proc.vendor_name if proc else None,
@@ -597,5 +600,25 @@ def export_feedback_dataset():
             "total_samples": len(dataset),
             "samples": dataset
         }
+    finally:
+        sync_db.close()
+
+class PromoteSingletonsRequest(BaseModel):
+    cpse_id: Optional[int] = None
+
+@router.post("/promote-singletons")
+def promote_singletons_endpoint(
+    payload: Optional[PromoteSingletonsRequest] = Body(None),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Singleton Canonical Promotion endpoint:
+    Mints authoritative CNMC codes and crosswalk mappings for all un-clustered materials.
+    """
+    sync_db = get_sync_session()
+    try:
+        target_cpse_id = payload.cpse_id if payload else None
+        res = GoldenRecordService.promote_singleton_materials(sync_db, cpse_id=target_cpse_id)
+        return res
     finally:
         sync_db.close()

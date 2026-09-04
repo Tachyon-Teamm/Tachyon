@@ -14,32 +14,62 @@ from app.services.matching.cluster_engine import ClusterEngine
 
 class MatcherEngine:
     @classmethod
-    def execute_matching_job(cls, db: Session, job_id: int) -> Dict[str, Any]:
-        return cls.execute_cross_cpse_matching(db, job_id)
+    def execute_matching_job(
+        cls,
+        db: Session,
+        job_id: int,
+        scope: str = "ALL",
+        target_cpse_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        return cls.execute_cross_cpse_matching(db, job_id, scope=scope, target_cpse_id=target_cpse_id)
 
     @classmethod
-    def execute_cross_cpse_matching(cls, db: Session, job_id: int) -> Dict[str, Any]:
+    def execute_cross_cpse_matching(
+        cls,
+        db: Session,
+        job_id: int,
+        scope: Optional[str] = None,
+        target_cpse_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Executes Two-Stage Hybrid Neuro-Symbolic Multi-CPSE Matching:
           Stage 1: Fast Hybrid Candidate Retrieval (Dense BGE-M3 + Sparse SPLADE via Reciprocal Rank Fusion)
           Stage 2: Deterministic Multi-Sector Invariant Verification + Cross-Encoder Reranking
           Stage 3: Correlation Graph Entity Resolution
+        Supports scope="ALL" (multi-CPSE + intra), "CROSS" (cross-CPSE only), and "INTRA" (single-CPSE only).
         """
         job = db.query(MatchJob).filter(MatchJob.id == job_id).first()
         if not job:
             return {"status": "FAILED", "error": "Job not found"}
+
+        if job.parameters and "scope" in job.parameters:
+            scope = job.parameters.get("scope")
+        elif scope is None:
+            scope = "CROSS"
+
+        if job.parameters and "target_cpse_id" in job.parameters:
+            target_cpse_id = target_cpse_id or job.parameters.get("target_cpse_id")
             
         job.status = "RUNNING"
         db.commit()
         
         try:
-            # 1. Fetch active materials across all CPSEs
-            materials = db.query(Material).filter(Material.status == "ACTIVE").all()
+            # 1. Fetch active materials according to scope
+            mat_query = db.query(Material).filter(Material.status == "ACTIVE")
+            if scope == "INTRA" and target_cpse_id:
+                mat_query = mat_query.filter(Material.cpse_id == target_cpse_id)
+            materials = mat_query.all()
             if not materials or len(materials) < 2:
                 job.status = "COMPLETED"
                 job.total_pairs_evaluated = 0
                 job.candidates_found = 0
                 db.commit()
+                if scope == "INTRA":
+                    from app.services.governance.golden_record_service import GoldenRecordService
+                    try:
+                        GoldenRecordService.promote_singleton_materials(db, cpse_id=target_cpse_id)
+                    except Exception as prom_err:
+                        print(f"[MatcherEngine] Singleton promotion warning: {prom_err}")
                 return {"status": "COMPLETED", "candidates_found": 0}
                 
             mat_dict: Dict[int, Material] = {m.id: m for m in materials}
@@ -76,10 +106,13 @@ class MatcherEngine:
                     procurement_dict[m.id] = {
                         "vendor_normalized": proc.vendor_normalized or proc.vendor_name,
                         "unit_price": proc.unit_price,
-                        "hsn_code": proc.hsn_code
+                        "hsn_code": proc.hsn_code,
+                        "package_multiplier": getattr(m, "package_multiplier", 1.0) or 1.0
                     }
                 else:
-                    procurement_dict[m.id] = {}
+                    procurement_dict[m.id] = {
+                        "package_multiplier": getattr(m, "package_multiplier", 1.0) or 1.0
+                    }
 
             db.commit()
 
@@ -103,9 +136,18 @@ class MatcherEngine:
                     if not mat_a or not mat_b:
                         continue
                     
-                    # Strictly compare across different CPSEs only
-                    if mat_a.cpse_id == mat_b.cpse_id:
-                        continue
+                    # Scope-based pair filtering: "INTRA" | "CROSS" | "ALL"
+                    if scope == "CROSS":
+                        if mat_a.cpse_id == mat_b.cpse_id:
+                            continue
+                    elif scope == "INTRA":
+                        if mat_a.cpse_id != mat_b.cpse_id:
+                            continue
+                        if target_cpse_id and mat_a.cpse_id != target_cpse_id:
+                            continue
+                    elif scope == "ALL":
+                        # Both cross-CPSE and intra-CPSE pairs evaluated
+                        pass
 
                     total_pairs += 1
 
@@ -251,6 +293,15 @@ class MatcherEngine:
             job.total_pairs_evaluated = total_pairs
             job.candidates_found = candidates_created
             db.commit()
+
+            # Auto-promote singletons in Single-CPSE Mode
+            if scope == "INTRA":
+                from app.services.governance.golden_record_service import GoldenRecordService
+                try:
+                    GoldenRecordService.promote_singleton_materials(db, cpse_id=target_cpse_id)
+                except Exception as prom_err:
+                    print(f"[MatcherEngine] Singleton promotion warning: {prom_err}")
+
             return {"status": "COMPLETED", "candidates_found": candidates_created, "pairs_evaluated": total_pairs, "clusters_formed": len(created_review_clusters)}
             
         except Exception as e:
@@ -265,11 +316,14 @@ class MatcherEngine:
         cls,
         db: Session,
         new_material_ids: List[int],
-        job_id: int
+        job_id: int,
+        scope: str = "ALL",
+        target_cpse_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Incremental Multi-CPSE Candidate Matching:
         Efficiently evaluates only new materials against existing catalog in O(log N).
+        Supports scope="ALL", "CROSS", and "INTRA".
         """
         from app.services.matching.blocking_engine import BlockingEngine
 
@@ -277,15 +331,22 @@ class MatcherEngine:
         if not job:
             return {"status": "FAILED", "error": "Job not found"}
 
+        if job.parameters:
+            scope = job.parameters.get("scope", scope)
+            target_cpse_id = target_cpse_id or job.parameters.get("target_cpse_id")
+
         job.status = "RUNNING"
         db.commit()
 
         try:
             new_materials = db.query(Material).filter(Material.id.in_(new_material_ids)).all()
-            existing_materials = db.query(Material).filter(
+            existing_query = db.query(Material).filter(
                 Material.id.notin_(new_material_ids),
                 Material.status == "ACTIVE"
-            ).all()
+            )
+            if scope == "INTRA" and target_cpse_id:
+                existing_query = existing_query.filter(Material.cpse_id == target_cpse_id)
+            existing_materials = existing_query.all()
 
             if not new_materials or not existing_materials:
                 job.status = "COMPLETED"
@@ -327,8 +388,20 @@ class MatcherEngine:
                 try:
                     mat_a = mat_map.get(id_a)
                     mat_b = mat_map.get(id_b)
-                    if not mat_a or not mat_b or mat_a.cpse_id == mat_b.cpse_id:
+                    if not mat_a or not mat_b or id_a == id_b:
                         continue
+
+                    # Scope-based pair filtering
+                    if scope == "CROSS":
+                        if mat_a.cpse_id == mat_b.cpse_id:
+                            continue
+                    elif scope == "INTRA":
+                        if mat_a.cpse_id != mat_b.cpse_id:
+                            continue
+                        if target_cpse_id and mat_a.cpse_id != target_cpse_id:
+                            continue
+                    elif scope == "ALL":
+                        pass
 
                     specs_a = mat_a.technical_attributes or mat_a.extracted_attributes or {}
                     specs_b = mat_b.technical_attributes or mat_b.extracted_attributes or {}

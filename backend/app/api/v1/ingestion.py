@@ -265,6 +265,7 @@ async def start_batch(
     file: Optional[UploadFile] = File(None),
     cpse_code: str = Form("IOCL"),
     mapping_config_json: str = Form(...),
+    header_row_index: Optional[int] = Form(0),
     db: Session = Depends(get_db),
     current_user: TokenData = Depends(get_current_user)
 ):
@@ -330,7 +331,8 @@ async def start_batch(
             )
 
         # 3. Count total rows and stream into Bronze layer using resilient reader
-        full_df = read_dataframe_resilient(staged_file_path)
+        header_idx = header_row_index if header_row_index is not None else 0
+        full_df = read_dataframe_resilient(staged_file_path, header_idx=header_idx)
         total_rows = len(full_df)
 
         # Create Ingestion Batch in database

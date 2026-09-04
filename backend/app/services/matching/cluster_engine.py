@@ -74,7 +74,7 @@ class ClusterEngine:
             cluster = [pivot]
             remaining_nodes.remove(pivot)
 
-            # Find all neighbors with strong positive weight and NO negative/veto edge to pivot
+            # Find all neighbors with strong positive weight and NO negative/veto edge to ANY cluster member
             candidates_to_add = []
             for other in remaining_nodes:
                 pair = (min(pivot, other), max(pivot, other))
@@ -82,7 +82,22 @@ class ClusterEngine:
                     continue
                 score = positive_edges.get(pair, 0.0)
                 if score >= threshold:
-                    candidates_to_add.append(other)
+                    # Check negative edge against ALL already-admitted cluster members
+                    violates_veto = False
+                    for member in cluster:
+                        m_pair = (min(member, other), max(member, other))
+                        if m_pair in negative_edges:
+                            violates_veto = True
+                            break
+                    if not violates_veto:
+                        # Also check against candidates already selected to be added in this pass
+                        for c in candidates_to_add:
+                            c_pair = (min(c, other), max(c, other))
+                            if c_pair in negative_edges:
+                                violates_veto = True
+                                break
+                    if not violates_veto:
+                        candidates_to_add.append(other)
 
             for c in candidates_to_add:
                 cluster.append(c)

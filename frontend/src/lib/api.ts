@@ -111,7 +111,16 @@ export const api = {
   getRefineries: () => fetchApi<{ id: number; code: string; name: string }[]>("/materials/refineries/list"),
 
   // Matching Engine & Review Queue
-  triggerMatching: () => fetchApi<any>("/matching/trigger", { method: "POST" }),
+  triggerMatching: (payload?: { scope?: string; target_cpse_id?: number }) =>
+    fetchApi<any>("/matching/trigger", {
+      method: "POST",
+      body: payload ? JSON.stringify(payload) : undefined
+    }),
+  promoteSingletons: (cpse_id?: number) =>
+    fetchApi<any>("/review/promote-singletons", {
+      method: "POST",
+      body: JSON.stringify({ cpse_id })
+    }),
   getReviewQueue: (
     params:
       | string

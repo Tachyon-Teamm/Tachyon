@@ -17,14 +17,16 @@ from app.services.matching.embeddings import EmbeddingService
 
 def sanitize_price(raw_val: Any) -> float:
     """
-    Safely converts arbitrary raw price strings (with commas, currency symbols ₹/$, etc.) to float.
+    Safely converts arbitrary raw price strings (with commas, currency symbols ₹/$,
+    scientific notation, and negative values) to float.
     """
     if raw_val is None or pd.isna(raw_val):
         return 0.0
     val_str = str(raw_val).strip()
     if not val_str or val_str.upper() in ["N/A", "NA", "NULL", "NONE", "-", "UNKNOWN"]:
         return 0.0
-    cleaned = re.sub(r'[^\d.]', '', val_str)
+    val_str = val_str.replace(',', '')
+    cleaned = re.sub(r'[^\d.eE+-]', '', val_str)
     try:
         return float(cleaned) if cleaned else 0.0
     except (ValueError, TypeError):

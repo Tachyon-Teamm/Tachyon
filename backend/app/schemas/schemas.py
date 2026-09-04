@@ -112,6 +112,9 @@ class MaterialResponse(BaseModel):
     clean_part_number: Optional[str] = None
     clearance_suffix: Optional[str] = None
     is_kit_or_assembly: bool
+    category_code: Optional[str] = None
+    category_confidence: Optional[float] = 1.0
+    predicted_category_name: Optional[str] = None
     status: str
     last_po_price: Optional[float] = None
     vendor_name: Optional[str] = None

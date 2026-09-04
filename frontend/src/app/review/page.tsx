@@ -10,7 +10,8 @@ import {
   ShieldCheck, 
   ShieldAlert, 
   Check,
-  RefreshCw
+  RefreshCw,
+  Sparkles
 } from "lucide-react";
 
 export default function ReviewQueuePage() {
@@ -26,6 +27,7 @@ export default function ReviewQueuePage() {
   const pageSize = 25;
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [promotingSingletons, setPromotingSingletons] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [disputeModalOpen, setDisputeModalOpen] = useState(false);
   const [disputeReason, setDisputeReason] = useState("");
@@ -128,6 +130,19 @@ export default function ReviewQueuePage() {
     }
   };
 
+  const handlePromoteSingletons = async () => {
+    setPromotingSingletons(true);
+    try {
+      const res = await api.promoteSingletons();
+      setActionMessage(`Canonical promotion successful: ${res.promoted_count} unique items synthesized and registered in National Crosswalk.`);
+      await loadQueue();
+    } catch (err: any) {
+      alert(`Promotion notice: ${err.message}`);
+    } finally {
+      setPromotingSingletons(false);
+    }
+  };
+
   const highConfidenceCount = queueItems.filter(q => q.confidence_tier === "HIGH" && !q.safety_veto).length;
 
   return (
@@ -147,6 +162,15 @@ export default function ReviewQueuePage() {
         </div>
 
         <div className="flex items-center space-x-2.5">
+          <button
+            onClick={handlePromoteSingletons}
+            disabled={promotingSingletons || actionLoading}
+            className="flex items-center space-x-1.5 px-3.5 py-2 glass-input hover:bg-zinc-800 text-zinc-200 border border-white/[0.1] rounded-xl text-xs font-semibold apple-press transition disabled:opacity-50"
+          >
+            <Sparkles className={`h-3.5 w-3.5 ${promotingSingletons ? "animate-spin text-amber-400" : "text-amber-400"}`} />
+            <span>{promotingSingletons ? "Promoting..." : "Promote Singletons"}</span>
+          </button>
+
           {highConfidenceCount > 0 && (
             <button
               onClick={handleBulkApprove}

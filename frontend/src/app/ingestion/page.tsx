@@ -8,17 +8,36 @@ import {
   CheckCircle2, 
   ArrowRight, 
   AlertCircle, 
-  RefreshCw,
-  FileCheck2,
-  Clock,
-  History,
-  Layers
+  RefreshCw, 
+  FileCheck2, 
+  Clock, 
+  History, 
+  Layers,
+  Sparkles,
+  Play,
+  ArrowUpRight
 } from "lucide-react";
+
+interface CPSEStagedItem {
+  file: File | null;
+  status: "IDLE" | "STAGED" | "INGESTING" | "COMPLETED" | "FAILED";
+  batchId?: number;
+  rowCount?: number;
+  fileName?: string;
+  error?: string;
+}
 
 export default function IngestionPage() {
   const [cpses, setCpses] = useState<{ id: number; code: string; name: string; sector?: string }[]>([]);
   const [batches, setBatches] = useState<any[]>([]);
-  const [selectedCPSE, setSelectedCPSE] = useState<string>("IOCL");
+  const [batchesLoading, setBatchesLoading] = useState<boolean>(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Operational Mode: Method 1 (Single-CPSE) vs Method 2 (Combined 3-CPSE: CPCL + IOCL + BPCL)
+  const [operationMode, setOperationMode] = useState<"SINGLE" | "COMBINED">("SINGLE");
+
+  // Single CPSE Mode State
+  const [selectedCPSE, setSelectedCPSE] = useState<string>("CPCL");
   const [file, setFile] = useState<File | null>(null);
   const [uploadId, setUploadId] = useState<string | null>(null);
   const [detectData, setDetectData] = useState<any>(null);
@@ -27,8 +46,23 @@ export default function IngestionPage() {
   const [isStartingBatch, setIsStartingBatch] = useState<boolean>(false);
   const [batchResult, setBatchResult] = useState<any>(null);
   const [progressInfo, setProgressInfo] = useState<{ id: number; processed: number; total: number; percent: number; status: string } | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [batchesLoading, setBatchesLoading] = useState<boolean>(true);
+
+  // Single CPSE Intra-Matching & Singleton Promotion State
+  const [isIntraMatchingRunning, setIsIntraMatchingRunning] = useState<boolean>(false);
+  const [isPromotingRunning, setIsPromotingRunning] = useState<boolean>(false);
+  const [intraMatchResult, setIntraMatchResult] = useState<any>(null);
+  const [promoteResult, setPromoteResult] = useState<any>(null);
+
+  // Combined 3-CPSE Mode State (CPCL, IOCL, BPCL)
+  const [combinedState, setCombinedState] = useState<Record<string, CPSEStagedItem>>({
+    CPCL: { file: null, status: "IDLE", fileName: "cpcl_sample_extract.csv", rowCount: 8 },
+    IOCL: { file: null, status: "IDLE", fileName: "iocl_sample_extract.csv", rowCount: 8 },
+    BPCL: { file: null, status: "IDLE", fileName: "bpcl_sample_extract.csv", rowCount: 5 },
+  });
+  const [isStagingAll, setIsStagingAll] = useState<boolean>(false);
+  const [isIngestingCombined, setIsIngestingCombined] = useState<boolean>(false);
+  const [isHarmonizing, setIsHarmonizing] = useState<boolean>(false);
+  const [harmonizeResult, setHarmonizeResult] = useState<any>(null);
 
   const loadBatches = async () => {
     setBatchesLoading(true);
@@ -249,26 +283,236 @@ export default function IngestionPage() {
     }
   };
 
+  const handleTriggerIntraMatching = async () => {
+    setIsIntraMatchingRunning(true);
+    setErrorMsg(null);
+    setIntraMatchResult(null);
+    try {
+      const cpseObj = cpses.find((c) => c.code === selectedCPSE);
+      const res = await api.triggerMatching({
+        scope: "INTRA",
+        target_cpse_id: cpseObj?.id
+      });
+      setIntraMatchResult(res);
+    } catch (err: any) {
+      setErrorMsg(err.message || `Failed to trigger intra-enterprise deduplication for ${selectedCPSE}`);
+    } finally {
+      setIsIntraMatchingRunning(false);
+    }
+  };
+
+  const handlePromoteSingletons = async () => {
+    setIsPromotingRunning(true);
+    setErrorMsg(null);
+    setPromoteResult(null);
+    try {
+      const cpseObj = cpses.find((c) => c.code === selectedCPSE);
+      const res = await api.promoteSingletons(cpseObj?.id);
+      setPromoteResult(res);
+    } catch (err: any) {
+      setErrorMsg(err.message || `Failed to promote singletons for ${selectedCPSE}`);
+    } finally {
+      setIsPromotingRunning(false);
+    }
+  };
+
+  // --- Combined 3-CPSE Handlers ---
+  const handleStageAllCombined = async () => {
+    setIsStagingAll(true);
+    setErrorMsg(null);
+    try {
+      const samples = await api.getSamples();
+      const updated = { ...combinedState };
+      for (const code of ["CPCL", "IOCL", "BPCL"]) {
+        const item = samples?.[code];
+        if (item && item.content) {
+          const fileObj = new File(
+            [item.content],
+            item.filename || `${code.toLowerCase()}_sample_extract.csv`,
+            { type: "text/csv" }
+          );
+          const lines = item.content.trim().split("\n").length - 1;
+          updated[code] = {
+            file: fileObj,
+            status: "STAGED",
+            fileName: item.filename,
+            rowCount: lines > 0 ? lines : 8,
+          };
+        }
+      }
+      setCombinedState(updated);
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed to stage 3-CPSE master extracts");
+    } finally {
+      setIsStagingAll(false);
+    }
+  };
+
+  const handleStageSingleCPSEInCombined = async (code: string, customFile?: File) => {
+    setErrorMsg(null);
+    try {
+      if (customFile) {
+        setCombinedState((prev) => ({
+          ...prev,
+          [code]: {
+            file: customFile,
+            status: "STAGED",
+            fileName: customFile.name,
+            rowCount: undefined
+          }
+        }));
+        return;
+      }
+      const samples = await api.getSamples();
+      const item = samples?.[code];
+      if (!item || !item.content) {
+        throw new Error(`Sample extract for ${code} not found on server.`);
+      }
+      const fileObj = new File(
+        [item.content],
+        item.filename || `${code.toLowerCase()}_sample_extract.csv`,
+        { type: "text/csv" }
+      );
+      const lines = item.content.trim().split("\n").length - 1;
+      setCombinedState((prev) => ({
+        ...prev,
+        [code]: {
+          file: fileObj,
+          status: "STAGED",
+          fileName: item.filename,
+          rowCount: lines > 0 ? lines : 8
+        }
+      }));
+    } catch (err: any) {
+      setErrorMsg(err.message || `Failed to stage ${code}`);
+    }
+  };
+
+  const handleIngestAllCombined = async () => {
+    setIsIngestingCombined(true);
+    setErrorMsg(null);
+    setHarmonizeResult(null);
+    try {
+      const codes = ["CPCL", "IOCL", "BPCL"];
+      for (const code of codes) {
+        let currentFile = combinedState[code]?.file;
+        if (!currentFile) {
+          const samples = await api.getSamples();
+          const item = samples?.[code];
+          if (item && item.content) {
+            currentFile = new File(
+              [item.content],
+              item.filename || `${code.toLowerCase()}_sample_extract.csv`,
+              { type: "text/csv" }
+            );
+          }
+        }
+        if (!currentFile) continue;
+
+        setCombinedState((prev) => ({
+          ...prev,
+          [code]: { ...prev[code], status: "INGESTING" }
+        }));
+
+        const detectRes = await api.detectColumns(currentFile, code);
+        const mappings = detectRes.suggested_mappings || {};
+        const batchRes = await api.startBatch(currentFile, code, JSON.stringify(mappings), detectRes.upload_id);
+
+        setCombinedState((prev) => ({
+          ...prev,
+          [code]: {
+            file: currentFile,
+            status: "COMPLETED",
+            batchId: batchRes.id,
+            rowCount: batchRes.total_rows || batchRes.processed_rows || (code === "BPCL" ? 5 : 8),
+            fileName: detectRes.file_name,
+          }
+        }));
+      }
+      await loadBatches();
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed during multi-CPSE batch ingestion");
+    } finally {
+      setIsIngestingCombined(false);
+    }
+  };
+
+  const handleTriggerCrossHarmonization = async () => {
+    setIsHarmonizing(true);
+    setErrorMsg(null);
+    setHarmonizeResult(null);
+    try {
+      const res = await api.triggerMatching({ scope: "ALL" });
+      setHarmonizeResult(res);
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed to trigger multi-CPSE cross-harmonization engine");
+    } finally {
+      setIsHarmonizing(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="glass-card p-6 rounded-2xl">
-        <div className="flex items-center space-x-2.5 mb-1">
-          <UploadCloud className="h-5 w-5 text-zinc-300" />
-          <h1 className="text-xl font-bold tracking-tight text-white">
-            Ingestion & Column Mapper
-          </h1>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center space-x-2.5 mb-1">
+              <UploadCloud className="h-5 w-5 text-zinc-300" />
+              <h1 className="text-xl font-bold tracking-tight text-white">
+                Material Master Ingestion & Normalization
+              </h1>
+            </div>
+            <p className="text-xs text-zinc-400 font-normal">
+              Production-standard ERP ingestion with multi-encoding fallback, parametric regex extraction, and automated standardization.
+            </p>
+          </div>
+
+          {/* Operational Mode Toggle */}
+          <div className="flex items-center p-1 bg-zinc-950/80 border border-white/[0.08] rounded-xl">
+            <button
+              type="button"
+              onClick={() => setOperationMode("SINGLE")}
+              className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition ${
+                operationMode === "SINGLE"
+                  ? "bg-white text-black shadow-sm"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              <Layers className="h-3.5 w-3.5" />
+              <span>Method 1: Single CPSE</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setOperationMode("COMBINED")}
+              className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition ${
+                operationMode === "COMBINED"
+                  ? "bg-white text-black shadow-sm"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span>Method 2: Combined 3-CPSE</span>
+            </button>
+          </div>
         </div>
-        <p className="text-xs text-zinc-400 font-normal">
-          Upload SAP ERP extracts (CSV / Excel). Automatic header detection, 5-row live normalization preview, and batch processing.
-        </p>
       </div>
 
+      {/* Global Error Notice */}
+      {errorMsg && (
+        <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-xl flex items-center space-x-2.5">
+          <AlertCircle className="h-4 w-4 flex-shrink-0 text-rose-400" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
+
+      {operationMode === "SINGLE" && (
+        <>
       {/* Step 1: Upload & CPSE Selection */}
       <div className="glass-card p-6 rounded-2xl space-y-4">
         <div className="flex items-center justify-between">
           <span className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wider block">
-            Step 1 • Select Refinery & Upload Material Master Extract
+            Method 1 • Select Enterprise & Upload Material Master Extract
           </span>
           <span className="text-[11px] text-zinc-500">Supported: CSV, XLSX, XLS</span>
         </div>
@@ -408,25 +652,70 @@ export default function IngestionPage() {
         )}
 
         {batchResult && (
-          <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs rounded-xl flex items-center justify-between">
-            <div className="flex items-center space-x-2.5">
-              <CheckCircle2 className="h-5 w-5 text-emerald-400 flex-shrink-0" />
-              <div>
-                <span className="font-bold block text-emerald-200">
-                  Batch Ingestion Completed Successfully
-                </span>
-                <span className="text-[11px] text-emerald-300/80">
-                  Batch #{batchResult.id} for {batchResult.cpse_code} processed {batchResult.total_rows} records into active catalog.
-                </span>
+          <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs rounded-xl space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2.5">
+                <CheckCircle2 className="h-5 w-5 text-emerald-400 flex-shrink-0" />
+                <div>
+                  <span className="font-bold block text-emerald-200">
+                    Batch Ingestion Completed Successfully
+                  </span>
+                  <span className="text-[11px] text-emerald-300/80">
+                    Batch #{batchResult.id} for {batchResult.cpse_code} processed {batchResult.total_rows || batchResult.processed_rows} records into active catalog.
+                  </span>
+                </div>
               </div>
+              <Link
+                href="/materials"
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 rounded-lg text-xs font-semibold transition"
+              >
+                <span>View In Catalog</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
             </div>
-            <Link
-              href="/materials"
-              className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 rounded-lg text-xs font-semibold transition"
-            >
-              <span>View In Catalog</span>
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Link>
+
+            {/* Single-CPSE Post-Ingestion Intelligence Suite */}
+            <div className="pt-2 border-t border-emerald-500/20 flex flex-wrap items-center gap-3">
+              <span className="text-[11px] font-semibold text-emerald-300">Single-CPSE Intelligence:</span>
+              <button
+                type="button"
+                onClick={handleTriggerIntraMatching}
+                disabled={isIntraMatchingRunning}
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-white border border-white/[0.12] rounded-lg text-xs font-semibold apple-press transition disabled:opacity-50"
+              >
+                <Play className={`h-3 w-3 ${isIntraMatchingRunning ? "animate-spin text-amber-400" : "text-emerald-400"}`} />
+                <span>{isIntraMatchingRunning ? "Analyzing Duplicates..." : `Run Intra-Deduplication (${selectedCPSE})`}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handlePromoteSingletons}
+                disabled={isPromotingRunning}
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-white border border-white/[0.12] rounded-lg text-xs font-semibold apple-press transition disabled:opacity-50"
+              >
+                <Sparkles className={`h-3 w-3 ${isPromotingRunning ? "animate-spin text-amber-400" : "text-amber-400"}`} />
+                <span>{isPromotingRunning ? "Promoting..." : `Promote Unique Items to Golden Records`}</span>
+              </button>
+            </div>
+
+            {intraMatchResult && (
+              <div className="p-2.5 bg-zinc-950/80 rounded-lg border border-white/[0.08] text-[11px] text-zinc-300 flex items-center justify-between">
+                <span>Intra-CPSE deduplication job #{intraMatchResult.job_id} active. Review identified clusters in Governance Queue.</span>
+                <Link href="/review" className="text-emerald-400 hover:underline flex items-center space-x-1">
+                  <span>Open Review Queue</span>
+                  <ArrowRight className="h-3 w-3" />
+                </Link>
+              </div>
+            )}
+
+            {promoteResult && (
+              <div className="p-2.5 bg-zinc-950/80 rounded-lg border border-white/[0.08] text-[11px] text-emerald-300 flex items-center justify-between">
+                <span>Canonical promotion complete: {promoteResult.promoted_count} unique items minted with Verhoeff CNMCs.</span>
+                <Link href="/crosswalk" className="text-emerald-400 hover:underline flex items-center space-x-1">
+                  <span>View Crosswalk Matrix</span>
+                  <ArrowRight className="h-3 w-3" />
+                </Link>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -650,6 +939,268 @@ export default function IngestionPage() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+    </>
+  )}
+
+      {/* ============================================================ */}
+      {/* METHOD 2: COMBINED 3-CPSE WORKFLOW (CPCL + IOCL + BPCL)      */}
+      {/* ============================================================ */}
+      {operationMode === "COMBINED" && (
+        <div className="space-y-6">
+          {/* Overview & Quick Actions */}
+          <div className="glass-card p-6 rounded-2xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <span className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wider block">
+                  Method 2 • Oil & Gas Tri-Enterprise Master Harmonization
+                </span>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Simultaneously ingests and harmonizes material masters across CPCL, IOCL, and BPCL using hybrid neural embeddings and safety guardrails.
+                </p>
+              </div>
+
+              <div className="flex items-center space-x-2.5">
+                <button
+                  type="button"
+                  onClick={handleStageAllCombined}
+                  disabled={isStagingAll}
+                  className="flex items-center space-x-1.5 px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-white/[0.1] rounded-xl text-xs font-semibold apple-press transition disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isStagingAll ? "animate-spin text-amber-400" : "text-zinc-400"}`} />
+                  <span>{isStagingAll ? "Staging Datasets..." : "Stage All 3 Master Extracts"}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleIngestAllCombined}
+                  disabled={isIngestingCombined}
+                  className="flex items-center space-x-1.5 px-4 py-2 bg-white hover:bg-zinc-200 text-black rounded-xl text-xs font-bold shadow-sm apple-press transition disabled:opacity-50"
+                >
+                  <Play className={`h-3.5 w-3.5 ${isIngestingCombined ? "animate-spin" : "text-black"}`} />
+                  <span>{isIngestingCombined ? "Ingesting All 3 CPSEs..." : "Ingest All 3 CPSE Datasets"}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Tri-Enterprise Master Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+              {/* CPCL Card */}
+              <div className="p-4 bg-zinc-950/70 border border-white/[0.08] rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <span className="px-2 py-0.5 rounded bg-zinc-800 text-white font-mono text-xs font-bold">CPCL</span>
+                    <span className="text-xs font-semibold text-zinc-200">Chennai Petroleum</span>
+                  </div>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                    combinedState.CPCL.status === "COMPLETED" 
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                      : combinedState.CPCL.status === "INGESTING"
+                      ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                      : "bg-zinc-800 text-zinc-400"
+                  }`}>
+                    {combinedState.CPCL.status}
+                  </span>
+                </div>
+                <div className="text-[11px] text-zinc-400 space-y-1">
+                  <div>File: <span className="font-mono text-zinc-200">{combinedState.CPCL.fileName || "Not staged"}</span></div>
+                  <div>Sample Records: <span className="font-mono text-white font-semibold">{combinedState.CPCL.rowCount || 8} items</span></div>
+                  {combinedState.CPCL.batchId && (
+                    <div className="text-emerald-400 font-mono">Batch #{combinedState.CPCL.batchId} Active</div>
+                  )}
+                </div>
+                <div className="pt-1 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleStageSingleCPSEInCombined("CPCL")}
+                    className="flex-1 py-1 px-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-[11px] font-medium border border-white/[0.06] transition text-center"
+                  >
+                    Load CPCL Sample
+                  </button>
+                  <label className="py-1 px-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-[11px] font-medium border border-white/[0.06] cursor-pointer transition">
+                    Upload
+                    <input
+                      type="file"
+                      accept=".csv, .xlsx, .xls"
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                          handleStageSingleCPSEInCombined("CPCL", e.target.files[0]);
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* IOCL Card */}
+              <div className="p-4 bg-zinc-950/70 border border-white/[0.08] rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <span className="px-2 py-0.5 rounded bg-zinc-800 text-white font-mono text-xs font-bold">IOCL</span>
+                    <span className="text-xs font-semibold text-zinc-200">Indian Oil Corp</span>
+                  </div>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                    combinedState.IOCL.status === "COMPLETED" 
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                      : combinedState.IOCL.status === "INGESTING"
+                      ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                      : "bg-zinc-800 text-zinc-400"
+                  }`}>
+                    {combinedState.IOCL.status}
+                  </span>
+                </div>
+                <div className="text-[11px] text-zinc-400 space-y-1">
+                  <div>File: <span className="font-mono text-zinc-200">{combinedState.IOCL.fileName || "Not staged"}</span></div>
+                  <div>Sample Records: <span className="font-mono text-white font-semibold">{combinedState.IOCL.rowCount || 8} items</span></div>
+                  {combinedState.IOCL.batchId && (
+                    <div className="text-emerald-400 font-mono">Batch #{combinedState.IOCL.batchId} Active</div>
+                  )}
+                </div>
+                <div className="pt-1 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleStageSingleCPSEInCombined("IOCL")}
+                    className="flex-1 py-1 px-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-[11px] font-medium border border-white/[0.06] transition text-center"
+                  >
+                    Load IOCL Sample
+                  </button>
+                  <label className="py-1 px-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-[11px] font-medium border border-white/[0.06] cursor-pointer transition">
+                    Upload
+                    <input
+                      type="file"
+                      accept=".csv, .xlsx, .xls"
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                          handleStageSingleCPSEInCombined("IOCL", e.target.files[0]);
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* BPCL Card */}
+              <div className="p-4 bg-zinc-950/70 border border-white/[0.08] rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <span className="px-2 py-0.5 rounded bg-zinc-800 text-white font-mono text-xs font-bold">BPCL</span>
+                    <span className="text-xs font-semibold text-zinc-200">Bharat Petroleum</span>
+                  </div>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                    combinedState.BPCL.status === "COMPLETED" 
+                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                      : combinedState.BPCL.status === "INGESTING"
+                      ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                      : "bg-zinc-800 text-zinc-400"
+                  }`}>
+                    {combinedState.BPCL.status}
+                  </span>
+                </div>
+                <div className="text-[11px] text-zinc-400 space-y-1">
+                  <div>File: <span className="font-mono text-zinc-200">{combinedState.BPCL.fileName || "Not staged"}</span></div>
+                  <div>Sample Records: <span className="font-mono text-white font-semibold">{combinedState.BPCL.rowCount || 5} items</span></div>
+                  {combinedState.BPCL.batchId && (
+                    <div className="text-emerald-400 font-mono">Batch #{combinedState.BPCL.batchId} Active</div>
+                  )}
+                </div>
+                <div className="pt-1 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleStageSingleCPSEInCombined("BPCL")}
+                    className="flex-1 py-1 px-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-[11px] font-medium border border-white/[0.06] transition text-center"
+                  >
+                    Load BPCL Sample
+                  </button>
+                  <label className="py-1 px-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-[11px] font-medium border border-white/[0.06] cursor-pointer transition">
+                    Upload
+                    <input
+                      type="file"
+                      accept=".csv, .xlsx, .xls"
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                          handleStageSingleCPSEInCombined("BPCL", e.target.files[0]);
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Tri-Enterprise Cross-Harmonization Controller */}
+          <div className="glass-card p-6 rounded-2xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center space-x-2">
+                  <Sparkles className="h-4 w-4 text-emerald-400" />
+                  <span className="text-sm font-bold text-white tracking-tight">
+                    Neuro-Symbolic Cross-CPSE Harmonization Engine
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-400">
+                  Runs hybrid BGE-M3 dense embeddings + SPLADE sparse reciprocal rank fusion, deterministic safety invariant vetoes (150# vs 300#, SCH 40 vs SCH 80), and correlation clustering.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleTriggerCrossHarmonization}
+                disabled={isHarmonizing}
+                className="flex items-center space-x-2 px-6 py-3 bg-emerald-400 hover:bg-emerald-300 text-black rounded-xl text-xs font-bold shadow-lg apple-press transition disabled:opacity-50"
+              >
+                <Sparkles className={`h-4 w-4 ${isHarmonizing ? "animate-spin text-black" : "text-black"}`} />
+                <span>{isHarmonizing ? "Harmonizing CPSEs..." : "Trigger 3-CPSE Harmonization"}</span>
+              </button>
+            </div>
+
+            {/* Live Harmonization Feedback */}
+            {harmonizeResult && (
+              <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2.5">
+                    <CheckCircle2 className="h-5 w-5 text-emerald-400 flex-shrink-0" />
+                    <div>
+                      <span className="font-bold block text-emerald-200">
+                        Harmonization Job #{harmonizeResult.job_id} Dispatched
+                      </span>
+                      <span className="text-[11px] text-emerald-300/80">
+                        {harmonizeResult.message || "Cross-enterprise entity resolution executing in background."}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-emerald-500/20 flex flex-wrap items-center gap-3">
+                  <Link
+                    href="/review"
+                    className="flex items-center space-x-1.5 px-4 py-2 bg-white hover:bg-zinc-200 text-black rounded-xl text-xs font-bold transition shadow-sm"
+                  >
+                    <span>Inspect Governance Review Queue</span>
+                    <ArrowRight className="h-3.5 w-3.5 text-black" />
+                  </Link>
+                  <Link
+                    href="/crosswalk"
+                    className="flex items-center space-x-1.5 px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white border border-white/[0.1] rounded-xl text-xs font-semibold transition"
+                  >
+                    <span>View National Crosswalk Matrix</span>
+                    <ArrowRight className="h-3.5 w-3.5 text-zinc-400" />
+                  </Link>
+                  <Link
+                    href="/"
+                    className="flex items-center space-x-1.5 px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white border border-white/[0.1] rounded-xl text-xs font-semibold transition"
+                  >
+                    <span>Open Savings Analytics</span>
+                    <ArrowUpRight className="h-3.5 w-3.5 text-zinc-400" />
+                  </Link>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

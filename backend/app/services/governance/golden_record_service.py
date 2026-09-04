@@ -245,3 +245,109 @@ class GoldenRecordService:
         gr.canonical_attributes = ver.technical_attributes
         db.flush()
         return gr
+
+    @classmethod
+    def promote_singleton_materials(
+        cls,
+        db,
+        cpse_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Singleton Canonical Promotion for Single-CPSE Mode:
+        For active materials not in any cluster and not yet mapped in Crosswalk,
+        synthesizes ISO 8000 standardized description, mints an authoritative
+        Verhoeff CNMC code, and registers the local code in Crosswalk with mapping_type="IDENTICAL".
+        Ensures 100% of single-CPSE items get standardized without manual review intervention.
+        """
+        from app.models.models import Material, ReviewQueue, MatchCandidate, GoldenRecord, CNMCCode, Crosswalk
+        from app.services.governance.cnmc_minter import CNMCMinter
+        from app.services.governance.crosswalk_service import CrosswalkService
+        from app.services.governance.audit_service import AuditService
+
+        # 1. Existing crosswalked material IDs
+        crosswalked_mat_ids = set(
+            r[0] for r in db.query(Crosswalk.material_id).filter(Crosswalk.material_id.isnot(None)).all()
+        )
+
+        # 2. Material IDs that are part of pending ReviewQueue clusters
+        pending_rq_clusters = [
+            rq.cluster_group_id for rq in db.query(ReviewQueue).filter(ReviewQueue.status == "PENDING").all()
+        ]
+        pending_cluster_mat_ids = set()
+        if pending_rq_clusters:
+            cands = db.query(MatchCandidate).filter(MatchCandidate.cluster_group_id.in_(pending_rq_clusters)).all()
+            for c in cands:
+                pending_cluster_mat_ids.add(c.material_a_id)
+                pending_cluster_mat_ids.add(c.material_b_id)
+
+        # 3. Active materials query
+        query = db.query(Material).filter(Material.status == "ACTIVE")
+        if cpse_id:
+            query = query.filter(Material.cpse_id == cpse_id)
+        materials = query.all()
+
+        promoted = []
+        for m in materials:
+            if m.id in crosswalked_mat_ids or m.id in pending_cluster_mat_ids:
+                continue
+
+            # Synthesize ISO 8000 description
+            synth = cls.synthesize_iso8000_description([m])
+            final_desc = synth["standardized_description"]
+            if len(final_desc) > 500:
+                final_desc = final_desc[:497] + "..."
+
+            golden = GoldenRecord(
+                review_queue_id=None,
+                standardized_description=final_desc,
+                item_noun=synth["item_noun"],
+                modifier=synth["modifier"],
+                category_code=m.category_code or "GENERAL",
+                nominal_size=synth["nominal_size"],
+                pressure_class=synth["pressure_class"],
+                moc=synth["moc"],
+                schedule=synth["schedule"],
+                end_connection=synth["end_connection"],
+                standard_spec=synth["standard_spec"],
+                base_uom=synth["base_uom"],
+                technical_attributes=synth.get("technical_attributes", {}),
+                canonical_attributes=synth.get("canonical_attributes", {})
+            )
+            db.add(golden)
+            db.flush()
+
+            # Mint single-authority Verhoeff CNMC code
+            cnmc_code_str = CNMCMinter.mint_next_cnmc(db, golden.id)
+            cnmc_obj = db.query(CNMCCode).filter(CNMCCode.code == cnmc_code_str).first()
+
+            # Register in Crosswalk as IDENTICAL
+            CrosswalkService.register_mappings(db, cnmc_obj.id, [m], mapping_type="IDENTICAL")
+
+            # Audit trail
+            try:
+                AuditService.log_action(
+                    db,
+                    action="SINGLETON_CANONICAL_PROMOTION",
+                    entity_type="CNMC_CODE",
+                    entity_id=cnmc_code_str,
+                    user_id=1,
+                    evidence={
+                        "material_id": m.id,
+                        "material_code": m.material_code,
+                        "cpse_id": m.cpse_id,
+                        "mapping_type": "IDENTICAL",
+                        "golden_record": final_desc
+                    }
+                )
+            except Exception:
+                pass
+
+            crosswalked_mat_ids.add(m.id)
+            promoted.append({"material_id": m.id, "material_code": m.material_code, "cnmc": cnmc_code_str})
+
+        db.commit()
+        return {
+            "status": "SUCCESS",
+            "promoted_count": len(promoted),
+            "items": promoted
+        }

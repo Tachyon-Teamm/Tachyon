@@ -109,9 +109,20 @@ class CompositeScorer:
         else:
             score += 0.25 # Neutral baseline if vendor data not provided
             
-        # 2. Price Band Check (+/- 20%)
+        # 2. Price Band Check (+/- 20%) with Base Unit Packaging Normalization
         p_a_raw = proc_a.get("unit_price")
         p_b_raw = proc_b.get("unit_price")
+        mult_a = proc_a.get("package_multiplier") or 1.0
+        mult_b = proc_b.get("package_multiplier") or 1.0
+        try:
+            mult_a = float(mult_a) if float(mult_a) > 0 else 1.0
+        except (ValueError, TypeError):
+            mult_a = 1.0
+        try:
+            mult_b = float(mult_b) if float(mult_b) > 0 else 1.0
+        except (ValueError, TypeError):
+            mult_b = 1.0
+
         try:
             p_a = float(p_a_raw) if p_a_raw is not None else 0.0
         except (ValueError, TypeError):
@@ -122,8 +133,11 @@ class CompositeScorer:
         except (ValueError, TypeError):
             p_b = 0.0
 
-        if p_a > 0 and p_b > 0:
-            ratio = min(p_a, p_b) / max(p_a, p_b)
+        norm_p_a = (p_a / mult_a) if mult_a > 0 else p_a
+        norm_p_b = (p_b / mult_b) if mult_b > 0 else p_b
+
+        if norm_p_a > 0 and norm_p_b > 0:
+            ratio = min(norm_p_a, norm_p_b) / max(norm_p_a, norm_p_b)
             if ratio >= 0.80:
                 score += 0.30
             elif ratio >= 0.60:
