@@ -4,23 +4,18 @@ import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { 
-  Layers, 
-  CheckCircle2, 
   RefreshCw,
-  TrendingUp,
   AlertCircle,
   Search,
-  ArrowUpRight,
-  ShieldCheck,
-  Filter,
-  BarChart3
+  ArrowRight,
+  TrendingUp,
+  Layers,
+  GitMerge
 } from "lucide-react";
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<any>(null);
   const [savingsData, setSavingsData] = useState<any[]>([]);
-  const [heatmap, setHeatmap] = useState<any[]>([]);
-  const [venn, setVenn] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -30,20 +25,16 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const [sumRes, savRes, heatRes, vennRes] = await Promise.all([
+      const [sumRes, savRes] = await Promise.all([
         api.getDashboardSummary(),
         api.getDemandSavings(),
-        api.getQualityHeatmap(),
-        api.getVennOverlap(),
       ]);
 
       setSummary(sumRes);
       setSavingsData(savRes || []);
-      setHeatmap(heatRes || []);
-      setVenn(vennRes || null);
     } catch (err: any) {
       console.error("Dashboard fetch error:", err);
-      setError(err.message || "Failed to load dynamic metrics from backend");
+      setError(err.message || "Failed to load metrics from backend");
     } finally {
       setLoading(false);
     }
@@ -74,8 +65,10 @@ export default function DashboardPage() {
     rejected: 0
   };
 
-  // Filter & paginate savings table client-side for instant responsive interaction
-  const filteredSavings = useMemo(() => {
+  const totalDuplicatesResolved = (dupes.identical || 0) + (dupes.near_dupes || 0);
+
+  // Client-side search & pagination for responsiveness
+  const filteredDemand = useMemo(() => {
     if (!savingsData) return [];
     let list = savingsData;
     if (searchQuery.trim()) {
@@ -89,289 +82,247 @@ export default function DashboardPage() {
     return list;
   }, [savingsData, searchQuery]);
 
-  const displayedSavings = useMemo(() => {
-    if (showAllRows) return filteredSavings;
-    return filteredSavings.slice(0, 10);
-  }, [filteredSavings, showAllRows]);
+  const displayedDemand = useMemo(() => {
+    if (showAllRows) return filteredDemand;
+    return filteredDemand.slice(0, 10);
+  }, [filteredDemand, showAllRows]);
 
   const totalConsolidatedVolume = useMemo(() => {
     return (savingsData || []).reduce((acc, curr) => acc + (curr.total_volume || 0), 0);
   }, [savingsData]);
 
   return (
-    <div className="space-y-6 pb-10">
-      {/* Executive Hero Header */}
+    <div className="space-y-6 max-w-6xl mx-auto pb-12">
+      {/* Executive Hero Surface */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 glass-card p-6 rounded-2xl">
         <div className="space-y-1">
           <div className="flex items-center space-x-2">
             <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span className="text-[11px] font-semibold tracking-wider text-emerald-400 uppercase">
-              Harmonization Registry
-            </span>
-            <span className="text-zinc-600">|</span>
-            <span className="text-[11px] text-zinc-400 font-medium">
-              Multi-CPSE Consolidation Active
+            <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+              National Harmonization Framework
             </span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">
-            Analytics & Collaborative Savings
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+            Analytics & Procurement Overview
           </h1>
-          <p className="text-xs text-zinc-400 font-normal">
-            Zero-training multi-CPSE demand consolidation across enterprise partners (CPCL, IOCL, BPCL & national CPSEs).
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-2xl leading-relaxed">
+            Multi-enterprise catalog standardization across CPCL, IOCL, BPCL, ONGC, NTPC, SAIL, BHEL, and Coal India.
           </p>
         </div>
 
         <div className="flex items-center space-x-2.5">
           <Link
             href="/ingestion"
-            className="flex items-center space-x-1.5 px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/[0.08] rounded-xl text-xs font-medium apple-press transition"
+            className="flex items-center space-x-1.5 h-8.5 px-3.5 bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-950 rounded-xl text-xs font-semibold apple-press transition shadow-sm"
           >
-            <span>Ingestion Pipeline</span>
-            <ArrowUpRight className="h-3.5 w-3.5 text-zinc-400" />
+            <span>Import Extract</span>
+            <ArrowRight className="h-3.5 w-3.5" />
           </Link>
 
           <button
             onClick={loadDashboardData}
             disabled={loading}
-            className="flex items-center space-x-1.5 px-4 py-2 bg-white hover:bg-zinc-200 text-black rounded-xl text-xs font-semibold shadow-sm apple-press transition disabled:opacity-50"
+            className="flex items-center space-x-1.5 h-8.5 px-3 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-medium apple-press transition disabled:opacity-50"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin text-black" : "text-black"}`} />
-            <span>{loading ? "Refreshing..." : "Refresh Data"}</span>
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            <span>Refresh</span>
           </button>
         </div>
       </div>
 
       {error && (
-        <div className="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-2xl flex items-center space-x-2.5">
-          <AlertCircle className="h-4 w-4 text-rose-400 flex-shrink-0" />
+        <div className="p-4 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800/30 text-red-700 dark:text-red-300 text-xs rounded-xl flex items-center space-x-2.5">
+          <AlertCircle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
           <span>{error}</span>
         </div>
       )}
 
-      {/* TOP 4 HERO KPI CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* HERO CARD 1: Total Projected Savings (Elevated to #1) */}
-        <div className="glass-card rounded-2xl p-5 space-y-3 relative overflow-hidden border border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-transparent to-transparent">
+      {/* TOP 3 GLANCEABLE APPLE-STYLE KPI CARDS */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* KPI 1: National Standardization Rate */}
+        <div className="glass-card rounded-2xl p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold tracking-wider text-emerald-400 uppercase">
-              Projected Savings
+            <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
+              Standardization Progress
             </span>
-            <div className="h-7 w-7 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
-              <TrendingUp className="h-4 w-4 text-emerald-400" />
-            </div>
+            <TrendingUp className="h-4 w-4 text-zinc-400" />
           </div>
 
           <div>
-            <div className="text-2xl font-extrabold text-white font-mono tracking-tight">
-              ₹{summary?.collaborative_savings_total_lakhs || 0} Lakhs
+            <div className="flex items-baseline space-x-2">
+              <span className="text-3xl font-semibold text-zinc-900 dark:text-zinc-100 font-mono tracking-tight">
+                {cov.National}%
+              </span>
+              <span className="text-xs text-zinc-500 font-medium">National Coverage</span>
             </div>
-            <p className="text-[11px] text-zinc-400 mt-0.5">
-              Eliminating multi-vendor price spread
-            </p>
-          </div>
 
-          <div className="pt-2 border-t border-white/[0.06] flex items-center justify-between text-[11px]">
-            <span className="text-zinc-400">Consolidated Volume</span>
-            <span className="text-white font-mono font-semibold">
-              {totalConsolidatedVolume.toLocaleString()} units
-            </span>
-          </div>
-        </div>
-
-        {/* HERO CARD 2: Standardization Coverage */}
-        <div className="glass-card rounded-2xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold tracking-wider text-zinc-400 uppercase">
-              Standardization
-            </span>
-            <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-200 border border-white/[0.08]">
-              National {cov.National}%
-            </span>
-          </div>
-
-          <div>
-            <div className="flex justify-between text-xs text-zinc-300 mb-1.5 font-medium">
-              <span>National Progress</span>
-              <span className="font-bold text-white font-mono">{cov.National}%</span>
-            </div>
-            <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden border border-white/[0.06]">
+            <div className="w-full bg-zinc-200/80 dark:bg-zinc-800 h-2 rounded-full overflow-hidden mt-3">
               <div 
-                className="bg-white h-full rounded-full transition-all duration-300" 
+                className="bg-zinc-900 dark:bg-zinc-100 h-full rounded-full transition-all duration-500" 
                 style={{ width: `${Math.min(100, Math.max(0, cov.National))}%` }}
-              ></div>
+              />
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2 pt-1">
+          <div className="pt-2 border-t border-zinc-200/60 dark:border-zinc-800/60 flex items-center justify-between text-xs text-zinc-500 font-mono">
             {Object.entries(cov)
               .filter(([key]) => key !== "National")
+              .slice(0, 3)
               .map(([org, pct]: [string, any]) => (
-                <div key={org} className="flex-1 min-w-[75px] p-2.5 rounded-xl bg-zinc-900/60 border border-white/[0.06] text-center">
-                  <span className="text-[10px] text-zinc-400 block font-medium">{org}</span>
-                  <span className="text-sm font-bold text-white font-mono">{pct}%</span>
-                </div>
+                <span key={org}>
+                  <strong className="text-zinc-800 dark:text-zinc-200">{org}:</strong> {pct}%
+                </span>
               ))}
           </div>
         </div>
 
-        {/* HERO CARD 3: Duplicate Breakdown */}
-        <div className="glass-card rounded-2xl p-5 space-y-3">
+        {/* KPI 2: Duplicates Resolved */}
+        <div className="glass-card rounded-2xl p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold tracking-wider text-zinc-400 uppercase">
-              Duplicate Breakdown
+            <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
+              Duplicates Resolved
             </span>
-            <Layers className="h-4 w-4 text-zinc-500" />
+            <Layers className="h-4 w-4 text-zinc-400" />
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <div className="p-2.5 rounded-xl bg-zinc-900/60 border border-white/[0.06]">
-              <span className="text-[10px] text-zinc-400 block">Identical</span>
-              <span className="text-sm font-bold text-emerald-400 font-mono mt-0.5 block">{dupes.identical.toLocaleString()}</span>
+          <div>
+            <div className="flex items-baseline space-x-2">
+              <span className="text-3xl font-semibold text-zinc-900 dark:text-zinc-100 font-mono tracking-tight">
+                {totalDuplicatesResolved.toLocaleString()}
+              </span>
+              <span className="text-xs text-zinc-500 font-medium">Harmonized</span>
             </div>
-            <div className="p-2.5 rounded-xl bg-zinc-900/60 border border-white/[0.06]">
-              <span className="text-[10px] text-zinc-400 block">Near-Dupes</span>
-              <span className="text-sm font-bold text-zinc-200 font-mono mt-0.5 block">{dupes.near_dupes.toLocaleString()}</span>
-            </div>
-            <div className="p-2.5 rounded-xl bg-zinc-900/60 border border-white/[0.06]">
-              <span className="text-[10px] text-zinc-400 block">Substitutes</span>
-              <span className="text-sm font-bold text-amber-400 font-mono mt-0.5 block">{dupes.substitutes.toLocaleString()}</span>
-            </div>
-            <div className="p-2.5 rounded-xl bg-zinc-900/60 border border-white/[0.06]">
-              <span className="text-[10px] text-zinc-400 block">Resolved</span>
-              <span className="text-sm font-bold text-white font-mono mt-0.5 block">{dupes.total_resolved.toLocaleString()}</span>
-            </div>
+
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2 leading-relaxed">
+              Consolidated from {dupes.total_resolved.toLocaleString()} catalog records across 8 participating CPSEs.
+            </p>
+          </div>
+
+          <div className="pt-2 border-t border-zinc-200/60 dark:border-zinc-800/60 flex items-center justify-between text-xs text-zinc-500 font-mono">
+            <span>Identical: <strong className="text-zinc-800 dark:text-zinc-200">{dupes.identical}</strong></span>
+            <span>Near-Dupes: <strong className="text-zinc-800 dark:text-zinc-200">{dupes.near_dupes}</strong></span>
+            <span>Substitutes: <strong className="text-zinc-800 dark:text-zinc-200">{dupes.substitutes}</strong></span>
           </div>
         </div>
 
-        {/* HERO CARD 4: Interactive Governance Review Queue */}
-        <div className="glass-card rounded-2xl p-5 space-y-3">
+        {/* KPI 3: Review Queue Status */}
+        <div className="glass-card rounded-2xl p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold tracking-wider text-zinc-400 uppercase">
-              Review Queue
+            <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
+              Governance Queue
             </span>
-            <Link 
-              href="/review" 
-              className="text-[11px] text-zinc-400 hover:text-white flex items-center space-x-1 transition"
-            >
-              <span>Open</span>
-              <ArrowUpRight className="h-3 w-3" />
-            </Link>
+            <GitMerge className="h-4 w-4 text-zinc-400" />
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <Link
-              href="/review"
-              className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/20 transition group"
-            >
-              <span className="text-[10px] text-emerald-400 block font-medium group-hover:underline">Pending (≥90%)</span>
-              <span className="text-sm font-bold text-emerald-300 font-mono mt-0.5 block">{queue.pending_high}</span>
-            </Link>
-            <Link
-              href="/review"
-              className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 transition group"
-            >
-              <span className="text-[10px] text-amber-400 block font-medium group-hover:underline">Pending (70-89%)</span>
-              <span className="text-sm font-bold text-amber-300 font-mono mt-0.5 block">{queue.pending_med}</span>
-            </Link>
-            <div className="p-2.5 rounded-xl bg-zinc-900/60 border border-white/[0.06]">
-              <span className="text-[10px] text-zinc-400 block font-medium">Approved</span>
-              <span className="text-sm font-bold text-white font-mono mt-0.5 block">{queue.approved_today}</span>
+          <div>
+            <div className="flex items-baseline space-x-2">
+              <span className="text-3xl font-semibold text-zinc-900 dark:text-zinc-100 font-mono tracking-tight">
+                {queue.pending_high + queue.pending_med}
+              </span>
+              <span className="text-xs text-zinc-500 font-medium">Pending Review</span>
             </div>
-            <div className="p-2.5 rounded-xl bg-zinc-900/60 border border-white/[0.06]">
-              <span className="text-[10px] text-rose-400 block font-medium">Vetoed</span>
-              <span className="text-sm font-bold text-rose-300 font-mono mt-0.5 block">{queue.rejected}</span>
-            </div>
+
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2 leading-relaxed">
+              {queue.approved_today} approved today · {queue.rejected} vetoed under safety invariants.
+            </p>
+          </div>
+
+          <div className="pt-2 border-t border-zinc-200/60 dark:border-zinc-800/60 flex items-center justify-between text-xs">
+            <Link 
+              href="/review" 
+              className="text-xs font-medium text-zinc-900 dark:text-zinc-100 hover:underline flex items-center space-x-1"
+            >
+              <span>Inspect Match Queue</span>
+              <ArrowRight className="h-3 w-3" />
+            </Link>
+            <span className="text-[11px] font-mono text-zinc-400">
+              {queue.pending_high} High-Conf
+            </span>
           </div>
         </div>
       </div>
 
-      {/* Demand Aggregation & Savings Table */}
+      {/* Demand Aggregation & Catalog Consolidation Table */}
       <div className="glass-card rounded-2xl overflow-hidden">
-        <div className="p-5 border-b border-white/[0.08] flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="p-5 border-b border-zinc-200 dark:border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold text-white tracking-tight">
-              Demand Aggregation & Collaborative Savings
+            <h2 className="text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+              Demand Aggregation & Consolidated Sourcing
             </h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Consolidated procurement volumes eliminating multi-vendor price variance across CPSEs.
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+              Consolidated procurement volumes across participating CPSEs for strategic bulk sourcing.
             </p>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-            {/* Real-time search filter */}
+          <div className="flex items-center space-x-2">
+            {/* Search Filter */}
             <div className="relative">
               <Search className="h-3.5 w-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search CNMC or description..."
-                className="pl-8 pr-3 py-1.5 bg-zinc-900/80 border border-white/[0.08] rounded-xl text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-white/20 w-full sm:w-60"
+                placeholder="Filter CNMC or description..."
+                className="pl-8 pr-3 h-8 bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg text-xs text-zinc-900 dark:text-zinc-200 placeholder-zinc-400 focus:outline-none focus:border-zinc-400 w-56"
               />
             </div>
 
-            {/* Toggle Top 10 vs All */}
-            {filteredSavings.length > 10 && (
+            {filteredDemand.length > 10 && (
               <button
                 onClick={() => setShowAllRows(!showAllRows)}
-                className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/[0.08] rounded-xl text-xs font-medium apple-press transition whitespace-nowrap"
+                className="h-8 px-3 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-800 rounded-lg text-xs font-medium apple-press transition"
               >
-                {showAllRows ? "Show Top 10" : `View All (${filteredSavings.length})`}
+                {showAllRows ? "Top 10" : `View All (${filteredDemand.length})`}
               </button>
             )}
 
-            <div className="flex items-center space-x-2">
-              <span className="text-xs font-semibold px-3 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full font-mono whitespace-nowrap">
-                Total Savings: ₹{summary?.collaborative_savings_total_lakhs || 0} Lakhs
-              </span>
-            </div>
+            <span className="text-xs font-mono px-3 py-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-900 text-zinc-800 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-800 whitespace-nowrap">
+              Volume: <strong className="text-zinc-900 dark:text-zinc-100 font-semibold">{totalConsolidatedVolume.toLocaleString()} Units</strong>
+            </span>
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-zinc-300">
-            <thead className="bg-zinc-950 text-zinc-400 font-medium border-b border-white/[0.08]">
+          <table className="w-full text-left text-xs text-zinc-700 dark:text-zinc-300">
+            <thead className="bg-zinc-50 dark:bg-zinc-950/60 text-zinc-500 uppercase font-medium border-b border-zinc-200 dark:border-zinc-800 text-[10px] tracking-wider">
               <tr>
-                <th className="py-3 px-4">CNMC Code</th>
-                <th className="py-3 px-4">Standardized Description (ISO 8000)</th>
-                <th className="py-3 px-4 text-right">Enterprise Breakdown</th>
-                <th className="py-3 px-4 text-right">Total Vol</th>
-                <th className="py-3 px-4 text-right">Price Variance</th>
-                <th className="py-3 px-4 text-right text-emerald-400">Est. Savings</th>
+                <th className="py-3 px-4 font-mono">National CNMC</th>
+                <th className="py-3 px-4">Harmonized Specification (ISO 8000)</th>
+                <th className="py-3 px-4 text-right">Enterprise Volumes</th>
+                <th className="py-3 px-4 text-right">Consolidated Volume</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/[0.04]">
-              {displayedSavings && displayedSavings.length > 0 ? (
-                displayedSavings.map((row) => (
-                  <tr key={row.cnmc_code} className="hover:bg-zinc-900/40 transition-colors">
-                    <td className="py-3 px-4 font-mono font-semibold text-zinc-200">{row.cnmc_code}</td>
-                    <td className="py-3 px-4 font-medium text-zinc-100">{row.material_description}</td>
-                    <td className="py-3 px-4 text-right">
-                      <div className="flex flex-wrap justify-end gap-1.5">
-                        {row.organization_volumes && Object.keys(row.organization_volumes).length > 0 ? (
-                          Object.entries(row.organization_volumes).map(([org, vol]) => (
-                            <span key={org} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-zinc-800/80 text-zinc-300 border border-white/[0.06]">
-                              <span className="font-semibold text-white mr-1">{org}:</span> {vol} {row.base_uom}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="text-zinc-400 font-mono text-xs">{row.total_volume} {row.base_uom}</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-right font-semibold text-white font-mono">{row.total_volume} {row.base_uom}</td>
-                    <td className="py-3 px-4 text-right text-zinc-400 font-mono">
-                      ₹{row.min_price?.toLocaleString() || 0} - ₹{row.max_price?.toLocaleString() || 0}
-                    </td>
-                    <td className="py-3 px-4 text-right font-bold text-emerald-400 font-mono">
-                      ₹{row.estimated_savings_lakhs} Lakhs
-                    </td>
-                  </tr>
-                ))
-              ) : (
+            <tbody className="divide-y divide-zinc-200/70 dark:divide-zinc-800/70">
+              {displayedDemand.map((row) => (
+                <tr key={row.cnmc_code} className="hover:bg-zinc-50 dark:hover:bg-zinc-900/40 transition-colors">
+                  <td className="py-3.5 px-4 font-mono font-semibold text-zinc-900 dark:text-zinc-100 whitespace-nowrap">
+                    {row.cnmc_code}
+                  </td>
+                  <td className="py-3.5 px-4 font-sans text-zinc-800 dark:text-zinc-200 leading-relaxed max-w-md">
+                    {row.material_description}
+                  </td>
+                  <td className="py-3.5 px-4 text-right">
+                    <div className="flex flex-wrap justify-end gap-1 font-mono text-[10px]">
+                      {row.organization_volumes && Object.keys(row.organization_volumes).length > 0 ? (
+                        Object.entries(row.organization_volumes).map(([org, vol]) => (
+                          <span key={org} className="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700">
+                            {org}: {vol} {row.base_uom}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-zinc-500">{row.total_volume} {row.base_uom}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
+                    {row.total_volume} {row.base_uom}
+                  </td>
+                </tr>
+              ))}
+              {displayedDemand.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-zinc-500">
-                    {searchQuery ? "No matching records found for search query." : "No CNMC crosswalk records minted yet."}
+                  <td colSpan={4} className="py-12 text-center text-zinc-400 font-sans text-xs">
+                    {searchQuery ? "No records matched your search query." : "No demand records registered yet."}
                   </td>
                 </tr>
               )}
@@ -379,150 +330,6 @@ export default function DashboardPage() {
           </table>
         </div>
       </div>
-
-      {/* Bottom Grid: Heatmap, Overlap, Dedicated Taxonomy Distribution */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        {/* Specification Completeness */}
-        <div className="glass-card rounded-2xl p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold tracking-wider text-zinc-400 uppercase">
-              Specification Completeness
-            </span>
-          </div>
-
-          <div className="space-y-2.5">
-            {heatmap && heatmap.length > 0 ? (
-              heatmap.map((item) => (
-                <div key={item.field_name} className="p-3 rounded-xl bg-zinc-900/60 border border-white/[0.06]">
-                  <div className="text-xs font-medium text-zinc-300 mb-2">{item.field_name}</div>
-                  <div className="flex flex-wrap gap-2 text-center text-[11px]">
-                    {item.cpse_scores && Object.keys(item.cpse_scores).length > 0 ? (
-                      Object.entries(item.cpse_scores).map(([org, pct]: [string, any]) => (
-                        <div key={org} className="flex-1 min-w-[60px] bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
-                          <span className="text-zinc-400 block text-[10px] font-medium">{org}</span>
-                          <span className="text-white font-mono font-semibold">{pct}%</span>
-                        </div>
-                      ))
-                    ) : (
-                      <>
-                        <div className="flex-1 bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
-                          <span className="text-zinc-400 block text-[10px] font-medium">CPCL</span>
-                          <span className="text-white font-mono font-semibold">{item.cpcl_pct || 0}%</span>
-                        </div>
-                        <div className="flex-1 bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
-                          <span className="text-zinc-400 block text-[10px] font-medium">IOCL</span>
-                          <span className="text-white font-mono font-semibold">{item.iocl_pct || 0}%</span>
-                        </div>
-                        <div className="flex-1 bg-zinc-800/60 border border-white/[0.06] py-1 rounded-lg">
-                          <span className="text-zinc-400 block text-[10px] font-medium">BPCL</span>
-                          <span className="text-white font-mono font-semibold">{item.bpcl_pct || 0}%</span>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="p-6 text-center text-xs text-zinc-500">
-                Awaiting specification data ingestion.
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* 3-Way Overlap Card */}
-        <div className="glass-card rounded-2xl p-5 space-y-4 flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold tracking-wider text-zinc-400 uppercase">
-              Multi-CPSE Overlap
-            </span>
-          </div>
-
-          <div className="p-5 bg-zinc-900/70 rounded-xl border border-white/[0.06] text-center space-y-3">
-            <div>
-              <span className="text-2xl font-bold tracking-tight text-white font-mono block">
-                {venn ? (venn.multi_cpse_clusters || venn.all_three || 0).toLocaleString() : 0}
-              </span>
-              <span className="text-xs text-zinc-300 font-medium">Multi-CPSE Harmonized Clusters</span>
-            </div>
-
-            <div className="pt-3 border-t border-white/[0.06] flex flex-wrap gap-2 text-[11px]">
-              {venn?.pairwise_overlap && Object.keys(venn.pairwise_overlap).length > 0 ? (
-                Object.entries(venn.pairwise_overlap).slice(0, 3).map(([pair, count]: [string, any]) => (
-                  <div key={pair} className="flex-1 min-w-[80px] p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
-                    <span className="text-zinc-400 block text-[10px] truncate">{pair.replace("_", " & ")}</span>
-                    <span className="font-mono font-bold text-white">{count}</span>
-                  </div>
-                ))
-              ) : (
-                <>
-                  <div className="flex-1 p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
-                    <span className="text-zinc-400 block text-[10px]">CPCL & IOCL</span>
-                    <span className="font-mono font-bold text-white">{venn ? (venn.cpcl_iocl || 0).toLocaleString() : 0}</span>
-                  </div>
-                  <div className="flex-1 p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
-                    <span className="text-zinc-400 block text-[10px]">IOCL & BPCL</span>
-                    <span className="font-mono font-bold text-white">{venn ? (venn.iocl_bpcl || 0).toLocaleString() : 0}</span>
-                  </div>
-                  <div className="flex-1 p-2 rounded-lg bg-zinc-950 border border-white/[0.04]">
-                    <span className="text-zinc-400 block text-[10px]">CPCL & BPCL</span>
-                    <span className="font-mono font-bold text-white">{venn ? (venn.cpcl_bpcl || 0).toLocaleString() : 0}</span>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="text-[11px] text-zinc-500 text-center">
-            Harmonization eliminates duplicate safety stock across plants.
-          </div>
-        </div>
-
-        {/* Dedicated Material Group Taxonomy & Spend Distribution */}
-        <div className="glass-card rounded-2xl p-5 space-y-4 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-[11px] font-semibold tracking-wider text-zinc-400 uppercase">
-                Spend Taxonomy Breakdown
-              </span>
-              <BarChart3 className="h-4 w-4 text-zinc-500" />
-            </div>
-
-            <div className="space-y-2">
-              {summary?.material_group_distribution && Object.keys(summary.material_group_distribution).length > 0 ? (
-                Object.entries(summary.material_group_distribution).map(([groupName, pct]: [string, any]) => (
-                  <div key={groupName} className="space-y-1">
-                    <div className="flex justify-between text-[11px] text-zinc-300 font-medium">
-                      <span>{groupName}</span>
-                      <span className="font-mono text-zinc-200 font-semibold">{pct}%</span>
-                    </div>
-                    <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden border border-white/[0.04]">
-                      <div
-                        className="bg-emerald-500/80 h-full rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-zinc-500 text-xs py-4 text-center">
-                  Awaiting taxonomy classification.
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Clean system status footer badge */}
-          <div className="pt-3 border-t border-white/[0.06] flex items-center justify-between text-[10px] text-zinc-500 font-mono">
-            <span className="flex items-center space-x-1">
-              <ShieldCheck className="h-3 w-3 text-emerald-500" />
-              <span>HNSW Vector Index</span>
-            </span>
-            <span>100% Invariant Guardrails</span>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
-

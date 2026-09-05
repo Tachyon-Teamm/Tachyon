@@ -155,5 +155,47 @@ class TestAuditPrecisionUpgrades(unittest.TestCase):
         self.assertEqual(tamper_res["status"], "CONTENT_TAMPERED")
         self.assertEqual(tamper_res["tampered_entry_id"], 2)
 
+    def test_10_scorer_type_aware_numeric_attribute_safety(self):
+        """Verify numeric attributes never match via naive substring (e.g. 4 vs 14, 10 vs 100, PUMP 1 vs VALVE 1)"""
+        # 1. Direct _compare_attr_values checks
+        self.assertFalse(CompositeScorer._compare_attr_values("4 INCH", "14 INCH"))
+        self.assertFalse(CompositeScorer._compare_attr_values("10 BAR", "100 BAR"))
+        self.assertFalse(CompositeScorer._compare_attr_values("PUMP 1", "VALVE 1"))
+        self.assertFalse(CompositeScorer._compare_attr_values("CLASS 150", "CLASS 300"))
+        self.assertFalse(CompositeScorer._compare_attr_values("4", "14"))
+
+        # 2. Positive matches
+        self.assertTrue(CompositeScorer._compare_attr_values("4 INCH", "4 INCH"))
+        self.assertTrue(CompositeScorer._compare_attr_values("6 INCH", "6IN"))
+        self.assertTrue(CompositeScorer._compare_attr_values("VALVE, GATE", "GATE VALVE"))
+        self.assertTrue(CompositeScorer._compare_attr_values("GATE VALVE 2IN", "GATE VALVE 2 INCH"))
+
+    def test_11_webhook_service_dispatch_and_hmac(self):
+        """Verify WebhookService builds signed payloads and handles dispatch receipts gracefully"""
+        from app.services.integration.webhook_service import WebhookService
+
+        payload = WebhookService.build_event_payload(
+            "GOLDEN_RECORD_MINTED", "CNMC-40141601", {"item_noun": "GATE VALVE"}
+        )
+        self.assertEqual(payload["event_type"], "GOLDEN_RECORD_MINTED")
+        self.assertEqual(payload["entity_id"], "CNMC-40141601")
+        self.assertIn("timestamp", payload)
+
+        sig = WebhookService.generate_hmac_signature(payload, "test-secret-key")
+        self.assertIsInstance(sig, str)
+        self.assertEqual(len(sig), 64) # SHA-256 hex digest
+
+        # Dispatched to an unreachable endpoint should return FAILED receipt rather than throwing
+        receipt = WebhookService.dispatch_event(
+            "http://127.0.0.1:59999/fake-webhook",
+            "TEST_DISPATCH",
+            "ENTITY-1",
+            {"test": True},
+            secret_key="secret",
+            timeout=0.2
+        )
+        self.assertEqual(receipt["status"], "FAILED")
+        self.assertIn("error", receipt)
+
 if __name__ == "__main__":
     unittest.main()

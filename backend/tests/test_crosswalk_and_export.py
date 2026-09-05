@@ -167,5 +167,28 @@ class TestCrosswalkAndExport(unittest.TestCase):
         except AttributeError as err:
             self.fail(f"SAPExportService crashed on orphaned null relations: {err}")
 
+    # 6. Test Synthetic Dataset Download Endpoints
+    def test_synthetic_datasets_endpoint(self):
+        from app.api.v1.export import download_synthetic_dataset, download_all_synthetic_datasets_zip
+        from fastapi import HTTPException
+        # Existing file should return FileResponse
+        res = download_synthetic_dataset("cpcl_materials.csv")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.media_type, "text/csv")
+        self.assertEqual(res.filename, "cpcl_materials.csv")
+
+        # Zip bundle should return FileResponse
+        res_zip = download_all_synthetic_datasets_zip()
+        self.assertEqual(res_zip.status_code, 200)
+        self.assertEqual(res_zip.media_type, "application/zip")
+
+        # Non-existent or traversal file should raise 404
+        with self.assertRaises(HTTPException):
+            download_synthetic_dataset("non_existent_file.csv")
+
+        with self.assertRaises(HTTPException):
+            download_synthetic_dataset("../../etc/passwd")
+
 if __name__ == "__main__":
     unittest.main()
+

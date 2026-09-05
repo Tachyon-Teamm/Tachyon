@@ -1,3 +1,5 @@
+import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel
@@ -7,7 +9,7 @@ from sqlalchemy import select, and_
 from app.core.database import get_db, get_sync_db, get_sync_session
 from app.core.security import get_current_user, TokenData
 from app.models.models import (
-    ReviewQueue, MatchCandidate, Material, CPSE, ProcurementHistory,
+    User, ReviewQueue, MatchCandidate, Material, CPSE, ProcurementHistory,
     GoldenRecord, CNMCCode, Crosswalk, AuditLog, ReviewFeedback, TaxonomyCategory
 )
 from app.schemas.schemas import (
@@ -45,10 +47,15 @@ async def get_review_queue(
     items = res.scalars().all()
     
     out = []
+    cluster_ids = [item.cluster_group_id for item in items if item.cluster_group_id]
+    candidates_by_cluster = defaultdict(list)
+    if cluster_ids:
+        cand_res = await db.execute(select(MatchCandidate).filter(MatchCandidate.cluster_group_id.in_(cluster_ids)))
+        for c in cand_res.scalars().all():
+            candidates_by_cluster[c.cluster_group_id].append(c)
+
     for item in items:
-        # Get candidates in this cluster
-        cand_res = await db.execute(select(MatchCandidate).filter(MatchCandidate.cluster_group_id == item.cluster_group_id))
-        candidates = cand_res.scalars().all()
+        candidates = candidates_by_cluster.get(item.cluster_group_id, [])
         
         comp_score = 0.0
         sem_score = 0.0
@@ -224,8 +231,18 @@ APPROVED_RELATIONSHIPS = {
     "KIT_COMPONENT", "PACKAGING_VARIANT", "SUPERSEDED", "SUBSTITUTE"
 }
 
+def _resolve_user_id(db: Session, current_user: Optional[TokenData]) -> Optional[int]:
+    """Safely resolves user database ID to prevent foreign key violations."""
+    if not current_user:
+        return None
+    if getattr(current_user, "username", None):
+        user_obj = db.query(User).filter(User.username == current_user.username).first()
+        if user_obj:
+            return user_obj.id
+    return getattr(current_user, "user_id", None)
+
 @router.post("/action")
-async def execute_review_action(
+def execute_review_action(
     action: ReviewActionRequest,
     current_user: TokenData = Depends(get_current_user)
 ):
@@ -241,14 +258,14 @@ async def execute_review_action(
             mat_ids.add(c.material_a_id)
             mat_ids.add(c.material_b_id)
             
-        materials = sync_db.query(Material).filter(Material.id.in_(list(mat_ids))).all()
-        
-        if action.selected_material_ids is not None:
-            materials = [m for m in materials if m.id in action.selected_material_ids]
+        all_materials = sync_db.query(Material).filter(Material.id.in_(list(mat_ids))).all()
+        materials = [m for m in all_materials if m.id in action.selected_material_ids] if action.selected_material_ids is not None else list(all_materials)
+        unselected_materials = [m for m in all_materials if m.id not in {x.id for x in materials}]
 
         cnmc_code_str = None
         decision_upper = action.decision_type.upper()
-        reviewer_user_id = getattr(current_user, "user_id", None) or getattr(current_user, "cpse_id", None) or 1
+        reviewer_user_id = _resolve_user_id(sync_db, current_user)
+        ref_job_id = cand_res[0].job_id if cand_res else None
 
         # Idempotency check: if cluster is already approved, return existing minted CNMC
         if review.status == "APPROVED" and decision_upper in APPROVED_RELATIONSHIPS:
@@ -337,6 +354,42 @@ async def execute_review_action(
                 }
             )
 
+            # Re-queue unselected materials if 2 or more remain so they are never orphaned
+            if len(unselected_materials) >= 2:
+                remnant_cid = f"CLUST-SPLIT-{uuid.uuid4().hex[:8].upper()}"
+                unselected_ids = {m.id for m in unselected_materials}
+                reassigned = False
+                for c in cand_res:
+                    if c.material_a_id in unselected_ids and c.material_b_id in unselected_ids:
+                        c.cluster_group_id = remnant_cid
+                        reassigned = True
+                if not reassigned:
+                    m1, m2 = unselected_materials[0], unselected_materials[1]
+                    sync_db.add(MatchCandidate(
+                        job_id=ref_job_id,
+                        material_a_id=m1.id,
+                        material_b_id=m2.id,
+                        cluster_group_id=remnant_cid,
+                        semantic_score=0.75,
+                        attribute_score=0.75,
+                        procurement_score=0.75,
+                        composite_score=0.75,
+                        confidence_tier="MEDIUM",
+                        safety_veto=False
+                    ))
+                sync_db.add(ReviewQueue(
+                    cluster_group_id=remnant_cid,
+                    status="PENDING",
+                    confidence_tier="MEDIUM",
+                    category_code=review.category_code or "GENERAL",
+                    reviewer_notes=f"Unselected items split from cluster {action.cluster_group_id}"
+                ))
+            elif len(unselected_materials) == 1:
+                single_id = unselected_materials[0].id
+                for c in cand_res:
+                    if c.material_a_id == single_id or c.material_b_id == single_id:
+                        c.cluster_group_id = f"CLUST-SPLIT-{single_id}"
+
         elif decision_upper in ("REJECT", "INCOMPATIBLE"):
             review.status = "REJECTED"
             review.decision_type = decision_upper
@@ -379,6 +432,71 @@ async def execute_review_action(
                     "materials_count": len(materials)
                 }
             )
+
+            # If reviewer specified a subset to split off into a separate cluster
+            if action.selected_material_ids and 2 <= len(action.selected_material_ids) < len(all_materials):
+                sub_cid = f"CLUST-SPLIT-{uuid.uuid4().hex[:8].upper()}"
+                sel_ids = set(action.selected_material_ids)
+                reassigned = False
+                for c in cand_res:
+                    if c.material_a_id in sel_ids and c.material_b_id in sel_ids:
+                        c.cluster_group_id = sub_cid
+                        reassigned = True
+                if not reassigned:
+                    sel_mats = [m for m in all_materials if m.id in sel_ids]
+                    sync_db.add(MatchCandidate(
+                        job_id=ref_job_id,
+                        material_a_id=sel_mats[0].id,
+                        material_b_id=sel_mats[1].id,
+                        cluster_group_id=sub_cid,
+                        semantic_score=0.75,
+                        attribute_score=0.75,
+                        procurement_score=0.75,
+                        composite_score=0.75,
+                        confidence_tier="MEDIUM",
+                        safety_veto=False
+                    ))
+                sync_db.add(ReviewQueue(
+                    cluster_group_id=sub_cid,
+                    status="PENDING",
+                    confidence_tier="MEDIUM",
+                    category_code=review.category_code or "GENERAL",
+                    reviewer_notes=f"Sub-cluster split from {action.cluster_group_id}"
+                ))
+
+                rem_mats = [m for m in all_materials if m.id not in sel_ids]
+                if len(rem_mats) >= 2:
+                    rem_cid = f"CLUST-SPLIT-{uuid.uuid4().hex[:8].upper()}"
+                    rem_ids = {m.id for m in rem_mats}
+                    rem_reassigned = False
+                    for c in cand_res:
+                        if c.material_a_id in rem_ids and c.material_b_id in rem_ids:
+                            c.cluster_group_id = rem_cid
+                            rem_reassigned = True
+                    if not rem_reassigned:
+                        sync_db.add(MatchCandidate(
+                            job_id=ref_job_id,
+                            material_a_id=rem_mats[0].id,
+                            material_b_id=rem_mats[1].id,
+                            cluster_group_id=rem_cid,
+                            semantic_score=0.75,
+                            attribute_score=0.75,
+                            procurement_score=0.75,
+                            composite_score=0.75,
+                            confidence_tier="MEDIUM",
+                            safety_veto=False
+                        ))
+                    sync_db.add(ReviewQueue(
+                        cluster_group_id=rem_cid,
+                        status="PENDING",
+                        confidence_tier="MEDIUM",
+                        category_code=review.category_code or "GENERAL",
+                        reviewer_notes=f"Remnant sub-cluster split from {action.cluster_group_id}"
+                    ))
+            elif not action.selected_material_ids or len(action.selected_material_ids) == len(all_materials):
+                # Total split: dissociate candidates so materials become clean singletons
+                for c in cand_res:
+                    c.cluster_group_id = f"CLUST-SPLIT-{c.id}"
 
         sync_db.commit()
         return {
@@ -463,7 +581,7 @@ def bulk_approve_clusters(
             cnmc_code = CNMCMinter.mint_next_cnmc(sync_db, golden.id)
             cnmc_obj = sync_db.query(CNMCCode).filter(CNMCCode.code == cnmc_code).first()
 
-            reviewer_user_id = getattr(current_user, "user_id", None) or getattr(current_user, "cpse_id", None) or 1
+            reviewer_user_id = _resolve_user_id(sync_db, current_user)
             CrosswalkService.register_mappings(sync_db, cnmc_obj.id, mats, mapping_type="IDENTICAL")
             review.status = "APPROVED"
             review.decision_type = "IDENTICAL"
@@ -524,7 +642,7 @@ def dispute_cluster(
         if not review:
             raise HTTPException(status_code=404, detail="Review cluster not found")
 
-        reviewer_user_id = getattr(current_user, "user_id", None) or getattr(current_user, "cpse_id", None) or 1
+        reviewer_user_id = _resolve_user_id(sync_db, current_user)
         review.status = "DISPUTED"
         review.reviewer_notes = f"[DISPUTED by {dissenting_cpse_code or 'CPSE Steward'}]: {dispute_reason}"
         review.reviewer_id = reviewer_user_id

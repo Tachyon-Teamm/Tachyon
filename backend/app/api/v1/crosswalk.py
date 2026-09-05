@@ -8,7 +8,7 @@ from app.services.governance.crosswalk_service import CrosswalkService
 router = APIRouter(prefix="/crosswalk", tags=["Unified Crosswalk Hub"])
 
 @router.get("/registry", response_model=List[CNMCDetailResponse])
-async def list_cnmc_registry(
+def list_cnmc_registry(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0)
 ):
@@ -27,7 +27,7 @@ async def list_cnmc_registry(
         sync_db.close()
 
 @router.get("/lookup", response_model=ReverseLookupResponse)
-async def reverse_lookup(
+def reverse_lookup(
     local_code: str = Query(..., description="Local CPCL, IOCL, or BPCL material code, or National CNMC code"),
     cpse_code: Optional[str] = Query(None, description="CPCL, IOCL, or BPCL")
 ):

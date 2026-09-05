@@ -8,6 +8,12 @@ from app.db.taxonomy_seed import seed_multi_sector_taxonomies
 
 
 def init_db():
+    try:
+        with sync_engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+    except Exception as ext_err:
+        print(f"[init_db] Vector extension notice: {ext_err}")
+
     Base.metadata.create_all(bind=sync_engine)
     try:
         with sync_engine.begin() as conn:
@@ -85,8 +91,10 @@ def init_db():
         # 4. Seed Multi-Sector eCl@ss 14.0 Hierarchical Taxonomy & Dynamic Invariant Dictionaries
         seed_multi_sector_taxonomies(db)
 
-        # 5. Seed Synthetic Multi-CPSE Enterprise Datasets
-        seed_enterprise_scenarios(db)
+        # 5. Seed Synthetic Multi-CPSE Enterprise Datasets (only if SEED_DEMO_DATA is set)
+        import os
+        if os.getenv("SEED_DEMO_DATA", "").lower() in ("true", "1", "yes"):
+            seed_enterprise_scenarios(db)
 
     finally:
         db.close()

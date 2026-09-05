@@ -2,15 +2,27 @@ import pytest
 from starlette.testclient import TestClient
 from app.main import app
 from app.core.database import get_sync_db
-from app.models.models import Material, MatchCandidate, ReviewQueue, CPSE, MatchJob, CNMCCode, Crosswalk
+from app.models.models import Material, MatchCandidate, ReviewQueue, CPSE, MatchJob, CNMCCode, Crosswalk, GoldenRecord
 from app.services.governance.cnmc_minter import CNMCMinter, validate_verhoeff
 from app.services.governance.audit_service import AuditService
 
 def test_chunk8_verhoeff_and_cnmc_minting():
     db = next(get_sync_db())
     try:
+        gr = db.query(GoldenRecord).first()
+        if not gr:
+            gr = GoldenRecord(
+                standardized_description="VALVE, BALL, 2 INCH, 150#",
+                item_noun="VALVE",
+                modifier="BALL",
+                is_active=True
+            )
+            db.add(gr)
+            db.commit()
+            db.refresh(gr)
+
         # Mint next code
-        code = CNMCMinter.mint_next_cnmc(db, golden_record_id=1)
+        code = CNMCMinter.mint_next_cnmc(db, golden_record_id=gr.id)
         assert code.startswith("CNMC-")
         assert validate_verhoeff(code) is True
         

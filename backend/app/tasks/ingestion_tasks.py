@@ -1,5 +1,4 @@
 import re
-import json
 import pandas as pd
 from typing import Dict, Any, Optional
 from app.tasks.celery_app import celery_app
@@ -9,7 +8,6 @@ from app.models.models import (
     MaterialEmbedding, ProcurementHistory
 )
 from app.services.normalization.uom_normalizer import UOMNormalizer
-from app.services.normalization.domain_lexicon import DomainLexicon
 from app.services.normalization.spec_extractor import SpecExtractor
 from app.services.normalization.vendor_normalizer import VendorNormalizer
 from app.services.normalization.data_profiler import DataProfiler
@@ -42,6 +40,16 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
     try:
         batch.status = "PROCESSING"
         db.commit()
+
+        # Normalize mapping_config to canonical target_field -> source_col regardless of input orientation
+        canonical_targets = {"material_code", "short_description", "uom", "base_price", "quantity", "vendor_name", "hsn_code"}
+        norm_map = {}
+        for k, v in (mapping_config or {}).items():
+            if v in canonical_targets:
+                norm_map[v] = k
+            elif k in canonical_targets:
+                norm_map[k] = v
+        mapping_config = norm_map
 
         raw_records = db.query(RawMaterial).filter(RawMaterial.batch_id == batch_id).all()
         processed = 0
@@ -77,6 +85,7 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                 desc = str(data.get(mapping_config.get("short_description", "ITEM_SPEC"), "")).strip()
                 raw_uom = str(data.get(mapping_config.get("uom", "UOM"), "EA")).strip()
                 raw_price = sanitize_price(data.get(mapping_config.get("base_price", "PRICE"), 0.0))
+                raw_qty = sanitize_price(data.get(mapping_config.get("quantity", "QUANTITY"), 1.0)) or 1.0
                 raw_vendor = str(data.get(mapping_config.get("vendor_name", "VENDOR"), "")).strip()
                 raw_hsn = str(data.get(mapping_config.get("hsn_code", "HSN"), "")).strip()
 
@@ -93,6 +102,7 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                     mapping_config.get("short_description"),
                     mapping_config.get("uom"),
                     mapping_config.get("base_price"),
+                    mapping_config.get("quantity"),
                     mapping_config.get("vendor_name"),
                     mapping_config.get("hsn_code")
                 }
@@ -135,6 +145,7 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                     "norm_vendor": norm_vendor,
                     "raw_vendor": raw_vendor,
                     "raw_price": raw_price,
+                    "raw_qty": raw_qty,
                     "raw_hsn": raw_hsn,
                     "rec_completeness": rec_completeness
                 })
@@ -255,8 +266,8 @@ def process_ingestion_batch_task(batch_id: int, mapping_config: Dict[str, str]):
                             vendor_normalized=item["norm_vendor"],
                             hsn_code=item["raw_hsn"],
                             unit_price=item["raw_price"],
-                            quantity=1.0,
-                            total_spend=item["raw_price"]
+                            quantity=item["raw_qty"],
+                            total_spend=item["raw_price"] * item["raw_qty"]
                         )
                         db.add(proc)
                         existing_procs[mat.id] = proc

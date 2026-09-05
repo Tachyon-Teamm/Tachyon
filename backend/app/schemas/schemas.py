@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 # ----------------- Auth & User -----------------
 class Token(BaseModel):
@@ -15,6 +15,8 @@ class UserLogin(BaseModel):
     password: str
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     username: str
     email: str
@@ -22,26 +24,16 @@ class UserResponse(BaseModel):
     cpse_id: Optional[int] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 # ----------------- CPSE -----------------
 class CPSEResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     code: str
     name: str
     sector: Optional[str] = "GENERAL"
 
-    class Config:
-        from_attributes = True
-
 # ----------------- Ingestion & Mapping -----------------
-class ColumnMappingItem(BaseModel):
-    source_column: str
-    target_field: str
-    confidence: float = 1.0
-    is_validated: bool = True
-
 class ColumnMappingDetectResponse(BaseModel):
     file_name: str
     upload_id: Optional[str] = None
@@ -54,6 +46,8 @@ class ColumnMappingDetectResponse(BaseModel):
     quality_report: Optional[Dict[str, Any]] = None
 
 class IngestionBatchResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     cpse_id: int
     cpse_code: Optional[str] = None
@@ -63,9 +57,6 @@ class IngestionBatchResponse(BaseModel):
     status: str
     quality_score: Optional[float] = 1.0
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 class BatchProgressResponse(BaseModel):
     id: int
@@ -94,6 +85,8 @@ class ExtractedSpecs(BaseModel):
     extra_attributes: Dict[str, Any] = Field(default_factory=dict)
 
 class MaterialResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     cpse_id: int
     cpse_code: Optional[str] = None
@@ -120,9 +113,6 @@ class MaterialResponse(BaseModel):
     vendor_name: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 class PaginatedMaterialResponse(BaseModel):
     items: List[MaterialResponse]
     total: int
@@ -131,18 +121,6 @@ class PaginatedMaterialResponse(BaseModel):
     total_pages: int
 
 # ----------------- Matching & Scoring -----------------
-class MatchJobResponse(BaseModel):
-    id: int
-    status: str
-    total_pairs_evaluated: int = 0
-    candidates_found: int = 0
-    error_message: Optional[str] = None
-    started_at: datetime
-    completed_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
 class ScoreBreakdown(BaseModel):
     semantic_score: float
     attribute_score: float
@@ -151,14 +129,6 @@ class ScoreBreakdown(BaseModel):
     safety_veto: bool
     veto_reason: Optional[str] = None
     confidence_tier: str
-
-class MatchCandidateResponse(BaseModel):
-    id: int
-    cluster_group_id: str
-    material_a: MaterialResponse
-    material_b: MaterialResponse
-    scores: ScoreBreakdown
-    created_at: datetime
 
 class ClusterMaterialItem(BaseModel):
     material: MaterialResponse
@@ -200,6 +170,8 @@ class ReviewActionRequest(BaseModel):
 
 # ----------------- Golden Record & CNMC -----------------
 class GoldenRecordResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     standardized_description: str
     item_noun: str
@@ -214,9 +186,6 @@ class GoldenRecordResponse(BaseModel):
     version_number: int = 1
     technical_attributes: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 class CrosswalkItem(BaseModel):
     cpse_code: str

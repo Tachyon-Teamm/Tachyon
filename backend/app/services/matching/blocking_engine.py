@@ -1,10 +1,5 @@
-from typing import Dict, List, Set, Tuple, Any, Optional, TYPE_CHECKING
-import math
-from app.services.matching.guardrails import SafetyGuardrails
+from typing import Dict, List, Set, Tuple, Any, Optional
 from app.services.matching.scorer import CompositeScorer
-
-if TYPE_CHECKING:
-    from app.models.models import Material
 
 class BlockingEngine:
     """

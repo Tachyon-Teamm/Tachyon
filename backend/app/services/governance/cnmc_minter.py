@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.models.models import CNMCCode, GoldenRecord

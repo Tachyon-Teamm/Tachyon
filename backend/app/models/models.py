@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, DateTime, ForeignKey, 
     Text, JSON, UniqueConstraint, Index
@@ -330,7 +330,7 @@ class GoldenRecord(Base):
     # ISO 8000 Noun-Modifier standard description
     standardized_description = Column(String(500), nullable=False)
     item_noun = Column(String(100), nullable=False)
-    modifier = Column(String(100), nullable=True)
+    modifier = Column(String(500), nullable=True)
     category_code = Column(String(50), nullable=True, index=True)
     nominal_size = Column(String(50), nullable=True)
     pressure_class = Column(String(50), nullable=True)

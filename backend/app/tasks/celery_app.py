@@ -1,8 +1,17 @@
+import os
+import sys
+
+# Celery is activated if explicitly enabled or if running under the Celery CLI
+is_celery_worker = any("celery" in arg for arg in sys.argv)
+use_celery_env = os.getenv("USE_CELERY", "auto").lower()
+
 try:
     from celery import Celery
-    HAS_CELERY = True
+    _CELERY_AVAILABLE = True
 except ImportError:
-    HAS_CELERY = False
+    _CELERY_AVAILABLE = False
+
+HAS_CELERY = _CELERY_AVAILABLE and (use_celery_env in ("true", "1", "yes") or is_celery_worker)
 
 from app.core.config import settings
 

@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Optional, Tuple, Set
 import uuid
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, or_
+from sqlalchemy import and_, or_
 from app.core.config import settings
 from app.models.models import (
     Material, MaterialEmbedding, ProcurementHistory, MatchJob,
@@ -70,7 +70,7 @@ class MatcherEngine:
                         GoldenRecordService.promote_singleton_materials(db, cpse_id=target_cpse_id)
                     except Exception as prom_err:
                         print(f"[MatcherEngine] Singleton promotion warning: {prom_err}")
-                return {"status": "COMPLETED", "candidates_found": 0}
+                return {"status": "COMPLETED", "candidates_found": 0, "pairs_evaluated": 0, "clusters_formed": 0}
                 
             mat_dict: Dict[int, Material] = {m.id: m for m in materials}
             dense_dict: Dict[int, List[float]] = {}
@@ -193,6 +193,9 @@ class MatcherEngine:
                     is_vetoed, veto_reason, suggested_route = SafetyGuardrails.evaluate_pair(specs_a, specs_b)
                     route = suggested_route or ("REJECT" if is_vetoed else "IDENTICAL")
 
+                    canonical_a = EmbeddingService.build_canonical_text(specs_a, mat_a.short_description)
+                    canonical_b = EmbeddingService.build_canonical_text(specs_b, mat_b.short_description)
+
                     # Composite Scoring with Category Weights & Dynamic Normalization
                     scores = CompositeScorer.compute_composite(
                         vec_a=dense_dict.get(id_a, []),
@@ -204,8 +207,8 @@ class MatcherEngine:
                         category=mat_a.item_noun,
                         sparse_a=sparse_dict.get(id_a, {}),
                         sparse_b=sparse_dict.get(id_b, {}),
-                        desc_a=mat_a.short_description,
-                        desc_b=mat_b.short_description
+                        desc_a=canonical_a or mat_a.short_description,
+                        desc_b=canonical_b or mat_b.short_description
                     )
 
                     effective_score = 0.0 if is_vetoed and route == "REJECT" else scores["composite_score"]
@@ -409,6 +412,9 @@ class MatcherEngine:
                     is_vetoed, veto_reason, suggested_route = SafetyGuardrails.evaluate_pair(specs_a, specs_b)
                     route = suggested_route or ("REJECT" if is_vetoed else "IDENTICAL")
 
+                    canonical_a = EmbeddingService.build_canonical_text(specs_a, mat_a.short_description)
+                    canonical_b = EmbeddingService.build_canonical_text(specs_b, mat_b.short_description)
+
                     scores = CompositeScorer.compute_composite(
                         vec_a=dense_dict.get(id_a, []),
                         vec_b=dense_dict.get(id_b, []),
@@ -417,8 +423,8 @@ class MatcherEngine:
                         proc_a={},
                         proc_b={},
                         category=mat_a.item_noun,
-                        desc_a=mat_a.short_description,
-                        desc_b=mat_b.short_description
+                        desc_a=canonical_a or mat_a.short_description,
+                        desc_b=canonical_b or mat_b.short_description
                     )
 
                     effective_score = 0.0 if is_vetoed and route == "REJECT" else scores["composite_score"]

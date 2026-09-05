@@ -8,7 +8,7 @@ except ImportError:
 
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List
+from typing import Optional
 
 try:
     from jose import JWTError, jwt
@@ -148,14 +148,3 @@ async def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> Tok
             headers={"WWW-Authenticate": "Bearer"},
         )
     return decode_token(token)
-
-
-def require_roles(allowed_roles: List[str]):
-    def role_checker(current_user: TokenData = Depends(get_current_user)):
-        if current_user.role not in allowed_roles and current_user.role != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Operation not permitted for current user role"
-            )
-        return current_user
-    return role_checker

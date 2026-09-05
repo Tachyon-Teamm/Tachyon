@@ -1,3 +1,4 @@
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -40,4 +41,3 @@ async def get_me(current_user: TokenData = Depends(get_current_user)):
         cpse_id=current_user.cpse_id,
         created_at=datetime.utcnow()
     )
-from datetime import datetime

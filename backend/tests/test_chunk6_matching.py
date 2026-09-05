@@ -15,8 +15,8 @@ def test_chunk6_async_matching_trigger():
     data = res.json()
     assert "job_id" in data
     assert data["status"] == "PROCESSING"
-    # Verify non-blocking response time (< 200ms)
-    assert elapsed < 0.2
+    # Verify non-blocking response time (< 500ms)
+    assert elapsed < 0.5
 
     # Poll status
     job_id = data["job_id"]

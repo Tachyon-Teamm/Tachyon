@@ -19,7 +19,7 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): 
   };
 
   try {
-    const res = await fetch(url, { ...options, headers });
+    const res = await fetch(url, { ...options, headers, cache: "no-store" });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(err.detail || `API request to ${endpoint} failed with status ${res.status}`);
@@ -35,8 +35,6 @@ export const api = {
   // Analytics
   getDashboardSummary: () => fetchApi<any>("/analytics/summary"),
   getDemandSavings: () => fetchApi<any[]>("/analytics/demand-savings"),
-  getQualityHeatmap: () => fetchApi<any[]>("/analytics/quality-heatmap"),
-  getVennOverlap: () => fetchApi<any>("/analytics/venn-overlap"),
 
   // Ingestion
   getCpses: () => fetchApi<{ id: number; code: string; name: string; sector?: string }[]>("/ingestion/cpses"),
@@ -196,13 +194,51 @@ export const api = {
     }),
 
   // Cryptographic Audit & Lineage
-  getAuditLogs: (params: { limit?: number; offset?: number; action?: string; entity_type?: string } = {}) => {
-    const q = new URLSearchParams();
-    if (params.limit) q.append("limit", params.limit.toString());
-    if (params.offset) q.append("offset", params.offset.toString());
-    if (params.action) q.append("action", params.action);
-    if (params.entity_type) q.append("entity_type", params.entity_type);
-    return fetchApi<any[]>(`/audit/logs?${q.toString()}`);
-  },
   verifyAuditChain: () => fetchApi<any>("/audit/verify-chain"),
+
+  // Authentication & RBAC
+  login: async (username: string, password: string) => {
+    const res = await fetchApi<{
+      access_token: string;
+      token_type: string;
+      role: string;
+      username: string;
+      cpse_code?: string;
+    }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    if (typeof window !== "undefined") {
+      localStorage.setItem("token", res.access_token);
+      localStorage.setItem(
+        "unimm_user",
+        JSON.stringify({
+          username: res.username,
+          role: res.role,
+          cpse_code: res.cpse_code,
+          token: res.access_token,
+        })
+      );
+    }
+    return res;
+  },
+  logout: () => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("token");
+      localStorage.removeItem("unimm_user");
+    }
+  },
+  getStoredUser: () => {
+    if (typeof window !== "undefined") {
+      const raw = localStorage.getItem("unimm_user");
+      if (raw) {
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
+  },
 };

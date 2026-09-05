@@ -36,6 +36,7 @@ except ImportError:
 class EmbeddingService:
     _dense_model = None
     _load_attempted: bool = False
+    _dimension_warning_logged: bool = False
 
     @classmethod
     def get_model(cls):
@@ -112,6 +113,9 @@ class EmbeddingService:
                 with _INFERENCE_LOCK:
                     emb = model.encode(text, normalize_embeddings=True)
                 emb_list = emb.tolist() if hasattr(emb, "tolist") else list(emb)
+                if len(emb_list) != settings.EMBEDDING_DIMENSION and not cls._dimension_warning_logged:
+                    print(f"[EmbeddingService WARNING] Model output dimension ({len(emb_list)}) does not match configured EMBEDDING_DIMENSION ({settings.EMBEDDING_DIMENSION}). Check .env model/dimension alignment.")
+                    cls._dimension_warning_logged = True
                 if len(emb_list) < settings.EMBEDDING_DIMENSION:
                     emb_list = emb_list + [0.0] * (settings.EMBEDDING_DIMENSION - len(emb_list))
                 elif len(emb_list) > settings.EMBEDDING_DIMENSION:

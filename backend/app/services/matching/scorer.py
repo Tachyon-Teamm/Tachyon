@@ -1,4 +1,5 @@
 import math
+import re
 from typing import Dict, Any, List, Optional
 from app.core.config import settings
 
@@ -40,11 +41,45 @@ class CompositeScorer:
         return max(0.0, min(1.0, float(cos_sim)))
 
     @staticmethod
+    def _compare_attr_values(str_a: str, str_b: str) -> bool:
+        """Type-aware and word-boundary robust attribute comparison."""
+        if str_a == str_b:
+            return True
+        
+        words_a = set(re.findall(r"[A-Z]+", str_a))
+        words_b = set(re.findall(r"[A-Z]+", str_b))
+        nums_a = re.findall(r"\d+(?:\.\d+)?", str_a)
+        nums_b = re.findall(r"\d+(?:\.\d+)?", str_b)
+
+        # 1. If numbers exist in both, check numeric compatibility
+        if nums_a and nums_b:
+            if [float(x) for x in nums_a] != [float(x) for x in nums_b]:
+                return False
+            if words_a and words_b:
+                syns = {"INCH": "IN", "IN": "IN", "NOS": "EA", "NO": "EA", "EA": "EA"}
+                w_a_norm = {syns.get(w, w) for w in words_a}
+                w_b_norm = {syns.get(w, w) for w in words_b}
+                return bool(w_a_norm & w_b_norm) and (w_a_norm.issubset(w_b_norm) or w_b_norm.issubset(w_a_norm))
+            return True
+
+        # 2. If no numbers in either, require word set compatibility
+        if not nums_a and not nums_b:
+            if words_a and words_b:
+                return words_a == words_b or words_a.issubset(words_b) or words_b.issubset(words_a)
+            return False
+
+        # 3. One has numbers, the other has none -> incompatible
+        return False
+
+    @staticmethod
     def calculate_attribute_overlap(specs_a: Dict[str, Any], specs_b: Dict[str, Any]) -> float:
         """
-        Calculates dynamic weighted Jaccard overlap on all technical attributes.
-        Supports both predefined engineering keys and arbitrary dynamic JSONB attributes.
+        Calculates weighted Jaccard-style overlap across extracted engineering attributes.
         """
+        return CompositeScorer.calculate_attribute_similarity(specs_a, specs_b)
+
+    @staticmethod
+    def calculate_attribute_similarity(specs_a: Dict[str, Any], specs_b: Dict[str, Any]) -> float:
         base_weights = {
             "clean_part_number": 0.40,
             "part_number": 0.35,
@@ -84,7 +119,7 @@ class CompositeScorer:
                 str_b = str(val_b).strip().upper()
                 if str_a and str_b:
                     total_weight += weight
-                    if str_a == str_b or str_a in str_b or str_b in str_a:
+                    if CompositeScorer._compare_attr_values(str_a, str_b):
                         matched_weight += weight
             elif (val_a is not None and str(val_a).strip()) or (val_b is not None and str(val_b).strip()):
                 total_weight += weight

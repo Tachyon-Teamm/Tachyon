@@ -5,57 +5,99 @@
 :root {
   --font-apple: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --font-mono-apple: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  --background: #000000;
+  
+  /* Light Mode Palette (Default) */
+  color-scheme: light;
+  --bg-canvas: #f8fafc;
+  --foreground: #09090b;
+  --surface-card: #ffffff;
+  --surface-subtle: #f1f5f9;
+  --surface-hover: #f8fafc;
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-active: rgba(0, 0, 0, 0.18);
+  --text-primary: #09090b;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --table-header: #f8fafc;
+  --table-row-hover: rgba(0, 0, 0, 0.025);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.18);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.32);
+  --accent-checkbox: #0284c7;
+}
+
+html.dark {
+  /* Dark Mode Palette */
+  color-scheme: dark;
+  --bg-canvas: #000000;
   --foreground: #f4f4f5;
-  --surface-1: #09090b;
-  --surface-2: #121215;
-  --surface-3: #18181b;
+  --surface-card: #111115;
+  --surface-subtle: #18181b;
+  --surface-hover: #1f1f23;
   --border-subtle: rgba(255, 255, 255, 0.08);
-  --border-active: rgba(255, 255, 255, 0.16);
+  --border-active: rgba(255, 255, 255, 0.18);
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --table-header: rgba(9, 9, 11, 0.85);
+  --table-row-hover: rgba(255, 255, 255, 0.035);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.25);
+  --accent-checkbox: #f4f4f5;
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
+  color: var(--text-primary);
+  background-color: var(--bg-canvas);
   font-family: var(--font-apple);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   letter-spacing: -0.012em;
-  background-color: #000000;
+  min-height: 100vh;
 }
 
-/* Codex / Apple-style Glassmorphism & Translucent Surfaces */
+/* Adaptive Glass Surfaces & Clean Panels */
 .glass-surface {
-  background: rgba(9, 9, 11, 0.75);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-subtle);
+}
+
+html.dark .glass-surface {
+  background: rgba(9, 9, 11, 0.85);
 }
 
 .glass-card {
-  background: rgba(18, 18, 21, 0.65);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.6);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04);
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+html.dark .glass-card {
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
 }
 
 .glass-card:hover {
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: var(--border-active);
 }
 
 .glass-input {
-  background: rgba(18, 18, 21, 0.8);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #f4f4f5;
-  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
 .glass-input:focus {
-  background: rgba(24, 24, 27, 0.95);
-  border-color: rgba(255, 255, 255, 0.28);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15);
+  background: var(--surface-card);
+  border-color: var(--border-active);
+  outline: none;
+}
+
+/* Adaptive Checkbox & Form Controls */
+input[type="checkbox"] {
+  accent-color: var(--accent-checkbox);
 }
 
 /* Apple Fluid Tactile Press Micro-interactions */
@@ -76,10 +118,10 @@ body {
   transform: scale(0.985);
 }
 
-/* Custom Minimalist Dark Scrollbar */
+/* Adaptive Minimalist Scrollbar */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -87,12 +129,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--scrollbar-thumb);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* Accessibility: Reduced Motion */

@@ -127,19 +127,29 @@ class GoldenRecordService:
         if tensile_rating:
             modifiers.append(tensile_rating)
 
-        # Collect any additional dynamic attributes from technical_attributes
+        # Collect any additional dynamic engineering attributes (excluding operational/transactional fields)
+        EXCLUDED_MODIFIER_KEYS = {
+            "item_noun", "raw_preprocessed", "quantity", "po_qty", "annual_demand",
+            "po_price", "unit_price", "netpr", "last_po_price", "vendor_name",
+            "vendor", "supplier", "commodity_code", "hsn", "hsn_code",
+            "part_no", "sap_matnr", "material_no", "item_code", "description"
+        }
         for m in materials:
             ext = getattr(m, "technical_attributes", None) or {}
             if isinstance(ext, dict):
                 for k, v in ext.items():
-                    if v and str(v).strip() and not k.startswith("_") and k not in ("item_noun", "raw_preprocessed"):
+                    k_lower = str(k).strip().lower()
+                    if (v and str(v).strip() and not k.startswith("_") 
+                            and k_lower not in EXCLUDED_MODIFIER_KEYS):
                         clean_v = f"{k.replace('_', ' ').upper()}: {str(v).strip().upper()}"
                         if clean_v not in modifiers and str(v).strip().upper() not in modifiers:
                             modifiers.append(clean_v)
 
         if modifiers:
             standardized_desc = f"{item_noun}, {', '.join(modifiers[:8])}"
-            mod_str = ", ".join(modifiers)
+            mod_str = ", ".join(modifiers[:8])
+            if len(mod_str) > 490:
+                mod_str = mod_str[:487] + "..."
         else:
             standardized_desc = item_noun
             mod_str = ""
@@ -208,43 +218,6 @@ class GoldenRecordService:
         gr.version_number += 1
         db.flush()
         return version_entry
-
-    @staticmethod
-    def rollback_to_version(
-        db,
-        golden_record_id: int,
-        target_version_number: int,
-        rolled_back_by_user_id: Optional[int] = None
-    ) -> Optional[Any]:
-        """
-        Rolls back a Golden Record to a prior historical version snapshot with audit logging.
-        """
-        from app.models.models import GoldenRecord, GoldenRecordVersion
-
-        gr = db.query(GoldenRecord).filter(GoldenRecord.id == golden_record_id).first()
-        if not gr:
-            return None
-
-        ver = db.query(GoldenRecordVersion).filter(
-            GoldenRecordVersion.golden_record_id == golden_record_id,
-            GoldenRecordVersion.version_number == target_version_number
-        ).first()
-
-        if not ver:
-            return None
-
-        # Snapshot current state before rolling back
-        GoldenRecordService.create_version_snapshot(
-            db, golden_record_id, rolled_back_by_user_id,
-            f"Automated pre-rollback snapshot before restoring v{target_version_number}"
-        )
-
-        # Restore state
-        gr.standardized_description = ver.standardized_description
-        gr.technical_attributes = ver.technical_attributes
-        gr.canonical_attributes = ver.technical_attributes
-        db.flush()
-        return gr
 
     @classmethod
     def promote_singleton_materials(

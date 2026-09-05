@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import Dict, Any
 from sqlalchemy.orm import Session
 from app.models.models import TaxonomyNode, AttributeDictionary
 

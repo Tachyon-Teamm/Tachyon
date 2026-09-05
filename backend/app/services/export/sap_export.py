@@ -1,6 +1,6 @@
 import csv
 import io
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
 from app.models.models import Crosswalk, CNMCCode, GoldenRecord, Material, CPSE, ProcurementHistory
 

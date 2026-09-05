@@ -19,6 +19,13 @@ class TestScorer(unittest.TestCase):
         overlap = CompositeScorer.calculate_attribute_overlap(specs_a, specs_b)
         self.assertEqual(overlap, 1.0)
 
+    def test_numeric_attribute_no_substring_false_positive(self):
+        # 4 INCH vs 14 INCH should NOT match
+        specs_a = {"nominal_size": "4 INCH"}
+        specs_b = {"nominal_size": "14 INCH"}
+        overlap = CompositeScorer.calculate_attribute_overlap(specs_a, specs_b)
+        self.assertEqual(overlap, 0.0)
+
     def test_composite_scoring_tiers(self):
         vec_a = [1.0, 0.5, 0.2]
         vec_b = [1.0, 0.5, 0.2]

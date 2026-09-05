@@ -1,6 +1,5 @@
 from typing import List, Optional
 from fastapi import APIRouter, Query, HTTPException, Depends
-from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from app.core.database import get_sync_session
 from app.models.models import AuditLog

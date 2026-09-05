@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { api } from "@/lib/api";
 import { 
   GitMerge, 
@@ -9,29 +9,64 @@ import {
   Split, 
   ShieldCheck, 
   ShieldAlert, 
-  Check,
-  RefreshCw,
-  Sparkles
+  Check, 
+  RefreshCw, 
+  Sparkles, 
+  ChevronRight, 
+  Info, 
+  Search, 
+  X 
 } from "lucide-react";
 
 export default function ReviewQueuePage() {
   const [statusFilter, setStatusFilter] = useState<string>("PENDING");
   const [queueItems, setQueueItems] = useState<any[]>([]);
+  const [filterQuery, setFilterQuery] = useState("");
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
   const [clusterCard, setClusterCard] = useState<any>(null);
   const [goldenDesc, setGoldenDesc] = useState<string>("");
   const [reviewerNotes, setReviewerNotes] = useState<string>("");
   const [selectedRelationship, setSelectedRelationship] = useState<string>("IDENTICAL");
   const [selectedMaterialIds, setSelectedMaterialIds] = useState<number[]>([]);
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
+  const [showScoreDetail, setShowScoreDetail] = useState(false);
+  
   const [page, setPage] = useState<number>(0);
   const pageSize = 25;
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
-  const [promotingSingletons, setPromotingSingletons] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  
+  // Dispute Modal State
   const [disputeModalOpen, setDisputeModalOpen] = useState(false);
   const [disputeReason, setDisputeReason] = useState("");
   const [disputeCpse, setDisputeCpse] = useState("IOCL");
+
+  // Real-time filtering across cluster ID, category, and item noun
+  const filteredQueueItems = useMemo(() => {
+    if (!filterQuery.trim()) return queueItems;
+    const qLower = filterQuery.toLowerCase().trim();
+    return queueItems.filter((q: any) =>
+      (q.cluster_group_id || "").toLowerCase().includes(qLower) ||
+      (q.category_code || "").toLowerCase().includes(qLower) ||
+      (q.category_name || "").toLowerCase().includes(qLower)
+    );
+  }, [queueItems, filterQuery]);
+
+  // Governance Safety: Synchronize selectedClusterId so active review pane always aligns with visible filter
+  useEffect(() => {
+    if (filteredQueueItems.length > 0) {
+      const isCurrentInFiltered = filteredQueueItems.some(
+        (i: any) => i.cluster_group_id === selectedClusterId
+      );
+      if (!isCurrentInFiltered) {
+        setSelectedClusterId(filteredQueueItems[0].cluster_group_id);
+      }
+    } else {
+      setSelectedClusterId(null);
+      setClusterCard(null);
+    }
+  }, [filteredQueueItems, selectedClusterId]);
 
   const loadQueue = async (targetPage = page) => {
     setLoading(true);
@@ -41,15 +76,15 @@ export default function ReviewQueuePage() {
         limit: pageSize,
         offset: targetPage * pageSize,
       });
-      setQueueItems(items);
-      if (items.length > 0 && (!selectedClusterId || !items.some((i: any) => i.cluster_group_id === selectedClusterId))) {
+      setQueueItems(items || []);
+      if (items && items.length > 0 && (!selectedClusterId || !items.some((i: any) => i.cluster_group_id === selectedClusterId))) {
         setSelectedClusterId(items[0].cluster_group_id);
-      } else if (items.length === 0) {
+      } else if (!items || items.length === 0) {
         setSelectedClusterId(null);
         setClusterCard(null);
       }
     } catch (err) {
-      console.error(err);
+      console.error("Queue load error:", err);
     } finally {
       setLoading(false);
     }
@@ -70,11 +105,18 @@ export default function ReviewQueuePage() {
     try {
       const card = await api.getClusterDetails(clusterId);
       setClusterCard(card);
-      setGoldenDesc(card.proposed_golden_record || "");
-      setSelectedMaterialIds(card.materials.map((m: any) => m.material.id));
+      setGoldenDesc(card?.proposed_golden_record || "");
+      setSelectedMaterialIds((card?.materials || []).map((m: any) => m.material.id));
       setActionMessage(null);
+      
+      // Smart default relationship based on confidence
+      if (card?.composite_score >= 0.95) {
+        setSelectedRelationship("IDENTICAL");
+      } else {
+        setSelectedRelationship("FUNCTIONAL_EQUIVALENT");
+      }
     } catch (err) {
-      console.error(err);
+      console.error("Cluster detail load error:", err);
     }
   };
 
@@ -87,18 +129,18 @@ export default function ReviewQueuePage() {
         decision_type: decisionType,
         custom_golden_description: goldenDesc,
         selected_material_ids: selectedMaterialIds,
-        reviewer_notes: reviewerNotes,
+        reviewer_notes: reviewerNotes || "Validated via Apple-Standard Human-In-The-Loop Review",
       });
 
-      if (decisionType === "IDENTICAL" || decisionType === "SUBSTITUTE") {
-        setActionMessage(`Successfully minted ${res.minted_cnmc} and registered in National Crosswalk.`);
+      if (res?.minted_cnmc) {
+        setActionMessage(`Approved! Minted ${res.minted_cnmc} and indexed in National Master Directory.`);
       } else {
-        setActionMessage(`Cluster marked as ${decisionType}`);
+        setActionMessage(`Cluster marked as ${decisionType}.`);
       }
 
       await loadQueue();
     } catch (err: any) {
-      alert(`Action notice: ${err.message}`);
+      alert(`Action error: ${err.message}`);
     } finally {
       setActionLoading(false);
     }
@@ -114,14 +156,12 @@ export default function ReviewQueuePage() {
     const highConfIds = queueItems
       .filter((q) => q.confidence_tier === "HIGH" && !q.safety_veto)
       .map((q) => q.cluster_group_id);
-    if (highConfIds.length === 0) {
-      alert("No pending high-confidence (>=95%) unvetoed clusters to approve.");
-      return;
-    }
+    if (highConfIds.length === 0) return;
+
     setActionLoading(true);
     try {
       const res = await api.bulkApprove(highConfIds);
-      setActionMessage(`Successfully bulk approved ${res.approved_count} high-confidence clusters.`);
+      setActionMessage(`Approved ${res.approved_count} high-confidence clusters.`);
       await loadQueue();
     } catch (err: any) {
       alert(`Bulk approval error: ${err.message}`);
@@ -130,304 +170,309 @@ export default function ReviewQueuePage() {
     }
   };
 
-  const handlePromoteSingletons = async () => {
-    setPromotingSingletons(true);
-    try {
-      const res = await api.promoteSingletons();
-      setActionMessage(`Canonical promotion successful: ${res.promoted_count} unique items synthesized and registered in National Crosswalk.`);
-      await loadQueue();
-    } catch (err: any) {
-      alert(`Promotion notice: ${err.message}`);
-    } finally {
-      setPromotingSingletons(false);
-    }
-  };
-
   const highConfidenceCount = queueItems.filter(q => q.confidence_tier === "HIGH" && !q.safety_veto).length;
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-6 max-w-7xl mx-auto pb-12">
+      {/* Executive Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 glass-card p-6 rounded-2xl">
-        <div className="space-y-0.5">
+        <div className="space-y-1">
           <div className="flex items-center space-x-2.5">
-            <GitMerge className="h-5 w-5 text-zinc-300" />
-            <h1 className="text-xl font-bold tracking-tight text-white">
+            <GitMerge className="h-5 w-5 text-zinc-900 dark:text-zinc-100" />
+            <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
               Governance Review Queue
             </h1>
           </div>
-          <p className="text-xs text-zinc-400 font-normal">
-            Multi-CPSE cluster validation. Verify safety invariants, inspect score math, and mint National CNMC Golden Records.
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-2xl leading-relaxed">
+            Validate multi-enterprise match candidates. Compare attributes side-by-side, verify safety invariants, and mint National CNMC Golden Records.
           </p>
         </div>
 
+        {/* Header Actions */}
         <div className="flex items-center space-x-2.5">
-          <button
-            onClick={handlePromoteSingletons}
-            disabled={promotingSingletons || actionLoading}
-            className="flex items-center space-x-1.5 px-3.5 py-2 glass-input hover:bg-zinc-800 text-zinc-200 border border-white/[0.1] rounded-xl text-xs font-semibold apple-press transition disabled:opacity-50"
-          >
-            <Sparkles className={`h-3.5 w-3.5 ${promotingSingletons ? "animate-spin text-amber-400" : "text-amber-400"}`} />
-            <span>{promotingSingletons ? "Promoting..." : "Promote Singletons"}</span>
-          </button>
-
-          {highConfidenceCount > 0 && (
+          {highConfidenceCount > 0 && statusFilter === "PENDING" && (
             <button
               onClick={handleBulkApprove}
               disabled={actionLoading}
-              className="flex items-center space-x-1.5 px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 rounded-xl text-xs font-semibold apple-press transition disabled:opacity-50"
+              className="flex items-center space-x-1.5 h-8.5 px-3.5 bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-950 rounded-xl text-xs font-semibold apple-press transition shadow-sm"
             >
-              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-              <span>Bulk Approve ({highConfidenceCount}) High Conf</span>
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 dark:text-emerald-600" />
+              <span>Approve All ({highConfidenceCount}) High-Confidence</span>
             </button>
           )}
 
           <button
             onClick={() => loadQueue()}
-            className="flex items-center space-x-1.5 px-3.5 py-2 glass-input hover:bg-zinc-800 text-zinc-300 rounded-xl text-xs font-medium apple-press transition"
+            className="flex items-center space-x-1.5 h-8.5 px-3 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-medium apple-press transition"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            <span>Refresh Queue</span>
+            <span>Refresh</span>
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Left Column: Cluster List */}
-        <div className="glass-card rounded-2xl p-4 space-y-3 h-[740px] overflow-y-auto">
-          {/* Status Tabs */}
-          <div className="grid grid-cols-4 gap-1 p-1 bg-zinc-950 rounded-xl border border-white/[0.06] text-[10px] font-bold">
-            {(["PENDING", "DISPUTED", "APPROVED", "REJECTED"] as const).map((st) => (
+      {/* Main Review Workspace */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left 4 Cols: Queue List */}
+        <div className="lg:col-span-4 glass-card rounded-2xl p-4 space-y-3 max-h-[820px] overflow-y-auto">
+          {/* Segmented Status Pill */}
+          <div className="grid grid-cols-4 gap-1 p-0.5 bg-zinc-100 dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 text-xs font-medium">
+            {(["PENDING", "APPROVED", "DISPUTED", "REJECTED"] as const).map((st) => (
               <button
                 key={st}
                 onClick={() => setStatusFilter(st)}
-                className={`py-1.5 rounded-lg transition text-center ${
+                className={`py-1.5 rounded-lg transition text-center text-[11px] ${
                   statusFilter === st
-                    ? "bg-zinc-800 text-white shadow"
-                    : "text-zinc-500 hover:text-zinc-300"
+                    ? "bg-white dark:bg-zinc-800 text-zinc-950 dark:text-white shadow-sm font-semibold"
+                    : "text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
                 }`}
               >
-                {st === "PENDING" ? "Queue" : st.charAt(0) + st.slice(1).toLowerCase()}
+                {st === "PENDING" ? "Pending" : st.charAt(0) + st.slice(1).toLowerCase()}
               </button>
             ))}
           </div>
 
-          <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
-            <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
-              {statusFilter} Clusters ({queueItems.length})
-            </span>
+          <div className="text-[11px] text-zinc-500 font-mono px-1 flex items-center justify-between">
+            <span>{filteredQueueItems.length} items in view</span>
+            <span>Page {page + 1}</span>
           </div>
 
-          {queueItems.length === 0 ? (
-            <div className="text-center py-16 text-zinc-500 text-xs">
-              All material clusters harmonized.
-            </div>
-          ) : (
-            queueItems.map((q) => {
+          {/* Quick Filter Input */}
+          <div className="relative">
+            <Search className="h-3.5 w-3.5 text-zinc-400 absolute left-2.5 top-2.5" />
+            <input
+              type="text"
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+              placeholder="Filter by noun, cluster ID..."
+              className="w-full h-8 pl-8 pr-7 bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:border-zinc-400"
+            />
+            {filterQuery && (
+              <button
+                onClick={() => setFilterQuery("")}
+                className="absolute right-2 top-2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* List Items */}
+          <div className="space-y-2">
+            {filteredQueueItems.map((q) => {
               const isSelected = q.cluster_group_id === selectedClusterId;
               return (
                 <div
                   key={q.cluster_group_id}
                   onClick={() => setSelectedClusterId(q.cluster_group_id)}
-                  className={`p-3.5 rounded-xl border cursor-pointer transition-all duration-150 apple-press-subtle ${
+                  className={`p-3.5 rounded-xl border cursor-pointer transition-all apple-press-subtle ${
                     isSelected
-                      ? "bg-zinc-800 border-white/20 shadow-sm ring-1 ring-white/10"
-                      : "bg-zinc-900/60 border-white/[0.04] hover:bg-zinc-800/50 hover:border-white/[0.08]"
+                      ? "bg-zinc-100/90 dark:bg-zinc-800/90 border-zinc-300 dark:border-zinc-600 shadow-sm"
+                      : "bg-white/70 dark:bg-zinc-950/60 border-zinc-200/80 dark:border-zinc-800/80 hover:bg-zinc-50 dark:hover:bg-zinc-900/50"
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-xs font-bold text-white font-mono">
-                      #{q.cluster_group_id.slice(0, 10)}
+                    <span className="text-xs font-mono font-bold text-zinc-900 dark:text-zinc-100">
+                      #{q.cluster_group_id}
                     </span>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                      q.confidence_tier === "HIGH"
-                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                        : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                    }`}>
-                      {q.confidence_tier}
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-zinc-200/60 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-300">
+                      {(q.composite_score * 100).toFixed(0)}% Match
                     </span>
                   </div>
 
-                  <div className="text-[11px] text-zinc-300 font-medium truncate">
-                    Category: {q.category_code}
-                  </div>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-400 truncate">
+                    {q.category_code} · {q.category_name || "General Catalog"}
+                  </p>
 
-                  <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-white/[0.04] text-[10px]">
-                    <span className="text-zinc-400 font-mono">Score: {(q.composite_score * 100).toFixed(1)}%</span>
+                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-zinc-200/60 dark:border-zinc-800/60 text-[10px]">
                     {q.safety_veto ? (
-                      <span className="text-rose-400 font-semibold flex items-center">
-                        <ShieldAlert className="h-3 w-3 mr-0.5 text-rose-400" /> Veto Alert
+                      <span className="text-red-600 dark:text-red-400 font-medium flex items-center">
+                        <ShieldAlert className="h-3 w-3 mr-1" /> Veto Alert
                       </span>
                     ) : (
-                      <span className="text-emerald-400 font-medium flex items-center">
-                        <ShieldCheck className="h-3 w-3 mr-0.5 text-emerald-400" /> Invariant Safe
+                      <span className="text-emerald-700 dark:text-emerald-400 font-medium flex items-center">
+                        <ShieldCheck className="h-3 w-3 mr-1" /> Safe Match
                       </span>
                     )}
+                    <ChevronRight className="h-3 w-3 text-zinc-400" />
                   </div>
                 </div>
               );
-            })
-          )}
+            })}
 
-          {/* Pagination Controls */}
-          <div className="flex items-center justify-between pt-3 border-t border-white/[0.06] text-xs">
-            <button
-              onClick={() => {
-                if (page > 0) {
-                  const newPage = page - 1;
-                  setPage(newPage);
-                  loadQueue(newPage);
-                }
-              }}
-              disabled={page === 0 || loading}
-              className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 border border-white/[0.06] text-[11px] font-medium transition"
-            >
-              Previous
-            </button>
-            <span className="text-[10px] text-zinc-400 font-mono">
-              Page {page + 1}
-            </span>
-            <button
-              onClick={() => {
-                if (queueItems.length === pageSize) {
-                  const newPage = page + 1;
-                  setPage(newPage);
-                  loadQueue(newPage);
-                }
-              }}
-              disabled={queueItems.length < pageSize || loading}
-              className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 disabled:opacity-30 text-zinc-300 border border-white/[0.06] text-[11px] font-medium transition"
-            >
-              Next
-            </button>
+            {filteredQueueItems.length === 0 && (
+              <div className="text-center py-12 text-zinc-400 text-xs font-sans space-y-1">
+                <p className="font-medium">No matching clusters found.</p>
+                <p className="text-[11px] text-zinc-500">
+                  {filterQuery ? `No candidates match "${filterQuery}".` : "Queue is currently empty for this status."}
+                </p>
+              </div>
+            )}
           </div>
+
+          {/* Pagination */}
+          {queueItems.length > 0 && (
+            <div className="flex items-center justify-between pt-2 border-t border-zinc-200 dark:border-zinc-800 text-xs text-zinc-500">
+              <button
+                onClick={() => { if (page > 0) { setPage(page - 1); loadQueue(page - 1); } }}
+                disabled={page === 0}
+                className="h-7 px-2.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-900 disabled:opacity-30 border border-zinc-200 dark:border-zinc-800 transition"
+              >
+                Previous
+              </button>
+              <button
+                onClick={() => { if (queueItems.length === pageSize) { setPage(page + 1); loadQueue(page + 1); } }}
+                disabled={queueItems.length < pageSize}
+                className="h-7 px-2.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-900 disabled:opacity-30 border border-zinc-200 dark:border-zinc-800 transition"
+              >
+                Next
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Right 3 Columns: 3-Way Cluster Card Review Screen */}
-        <div className="lg:col-span-3 space-y-4">
+        {/* Right 8 Cols: Side-by-Side Comparison Workspace */}
+        <div className="lg:col-span-8 space-y-4">
           {clusterCard ? (
-            <div className="glass-card rounded-2xl overflow-hidden space-y-5 p-6">
-              {/* Cluster Card Top Header */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-white/[0.08]">
-                <div>
-                  <div className="flex items-center space-x-2.5">
-                    <span className="text-sm font-bold text-white font-mono">
+            <div className="glass-card rounded-2xl p-6 space-y-6">
+              {/* Card Header & Confidence Glance */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-zinc-200 dark:border-zinc-800">
+                <div className="space-y-0.5">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-sm font-semibold font-mono text-zinc-900 dark:text-zinc-100">
                       Cluster #{clusterCard.cluster_group_id}
                     </span>
-                    <span className="text-xs px-2.5 py-0.5 bg-zinc-800 text-zinc-300 rounded-full border border-white/[0.08] font-medium">
-                      Category: {clusterCard.category_code}
+                    <span className="text-xs px-2 py-0.5 bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 rounded font-mono">
+                      {clusterCard.category_code}
                     </span>
                   </div>
-                  <p className="text-xs text-zinc-400 mt-1">
-                    {clusterCard.category_name}
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                    Comparing {clusterCard.materials?.length || 0} candidate items across enterprises
                   </p>
                 </div>
 
-                <div>
-                  <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                    clusterCard.confidence_tier === "HIGH"
-                      ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
-                      : "bg-amber-500/10 text-amber-300 border border-amber-500/20"
-                  }`}>
-                    Match Confidence: {(clusterCard.composite_score * 100).toFixed(1)}% ({clusterCard.confidence_tier})
-                  </span>
+                {/* Glanceable Match Score Pill */}
+                <div className="flex items-center space-x-2">
+                  <div 
+                    onClick={() => setShowScoreDetail(!showScoreDetail)}
+                    className="flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 cursor-pointer hover:border-zinc-300 dark:hover:border-zinc-700 transition"
+                  >
+                    {clusterCard.scores?.safety_veto ? (
+                      <ShieldAlert className="h-4 w-4 text-red-600 dark:text-red-400" />
+                    ) : (
+                      <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                    )}
+                    <span className="text-xs font-mono font-semibold text-zinc-900 dark:text-zinc-100">
+                      {(clusterCard.composite_score * 100).toFixed(1)}% Match
+                    </span>
+                    <Info className="h-3 w-3 text-zinc-400" />
+                  </div>
                 </div>
               </div>
 
+              {/* Action Message Feedback */}
               {actionMessage && (
-                <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs rounded-xl font-medium flex items-center space-x-2">
-                  <Check className="h-4 w-4 text-emerald-400 flex-shrink-0" />
+                <div className="p-3.5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/40 text-emerald-800 dark:text-emerald-200 text-xs rounded-xl flex items-center space-x-2">
+                  <Check className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                   <span>{actionMessage}</span>
                 </div>
               )}
 
-              {/* Multi-CPSE Candidate Cards (CPCL, IOCL, BPCL) */}
+              {/* Explainable Score Drilldown (Progressive Disclosure) */}
+              {showScoreDetail && (
+                <div className="p-4 bg-zinc-50 dark:bg-zinc-950/70 rounded-xl border border-zinc-200 dark:border-zinc-800 space-y-2 text-xs">
+                  <span className="font-semibold text-zinc-800 dark:text-zinc-200 block text-[11px] uppercase tracking-wider">
+                    Score Weight Breakdown:
+                  </span>
+                  <div className="grid grid-cols-3 gap-2 font-mono text-[11px]">
+                    <div className="p-2 bg-white dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800">
+                      <span className="text-zinc-500 block text-[10px]">Semantic Text (40%)</span>
+                      <span className="font-bold text-zinc-900 dark:text-zinc-100">{((clusterCard.scores?.semantic_score || 0) * 100).toFixed(1)}%</span>
+                    </div>
+                    <div className="p-2 bg-white dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800">
+                      <span className="text-zinc-500 block text-[10px]">Parametric Spec (35%)</span>
+                      <span className="font-bold text-zinc-900 dark:text-zinc-100">{((clusterCard.scores?.attribute_score || 0) * 100).toFixed(1)}%</span>
+                    </div>
+                    <div className="p-2 bg-white dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800">
+                      <span className="text-zinc-500 block text-[10px]">Procurement Graph (25%)</span>
+                      <span className="font-bold text-zinc-900 dark:text-zinc-100">{((clusterCard.scores?.procurement_score || 0) * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Side-by-Side Attribute Comparison Grid */}
               <div className="space-y-3">
-                <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">
-                  Multi-CPSE Match Candidates (Select items to include in merge):
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 font-mono block">
+                  Candidate Specifications Side-by-Side:
                 </span>
 
-                <div className="space-y-3">
-                  {clusterCard.materials.map((mItem: any) => {
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {(clusterCard.materials || []).map((mItem: any) => {
                     const m = mItem.material;
-                    const isSelected = selectedMaterialIds.includes(m.id);
+                    const isChecked = selectedMaterialIds.includes(m.id);
 
                     return (
                       <div
                         key={m.id}
                         onClick={() => toggleMaterialSelect(m.id)}
-                        className={`p-4 rounded-2xl border cursor-pointer transition-all duration-150 apple-press-subtle ${
-                          isSelected
-                            ? "bg-zinc-900 border-white/20 shadow-sm ring-1 ring-white/10"
-                            : "bg-zinc-950/60 border-white/[0.04] opacity-50"
+                        className={`p-4 rounded-xl border cursor-pointer transition-all space-y-3 ${
+                          isChecked 
+                            ? "bg-zinc-50/90 dark:bg-zinc-900/90 border-zinc-300 dark:border-zinc-700 shadow-sm" 
+                            : "bg-white/60 dark:bg-zinc-950/60 border-zinc-200/80 dark:border-zinc-800/80 opacity-50"
                         }`}
                       >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center space-x-2.5">
+                        {/* Header */}
+                        <div className="flex items-center justify-between pb-2 border-b border-zinc-200/60 dark:border-zinc-800/60">
+                          <div className="flex items-center space-x-2">
                             <input
                               type="checkbox"
-                              checked={isSelected}
+                              checked={isChecked}
                               onChange={() => toggleMaterialSelect(m.id)}
-                              className="h-4 w-4 rounded bg-zinc-900 border-zinc-700 text-white focus:ring-0 cursor-pointer"
+                              className="h-3.5 w-3.5 rounded"
                             />
-                            <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-zinc-800 text-zinc-200 border border-white/[0.08]">
-                              {m.cpse_code} SAP
-                            </span>
-                            <span className="font-mono text-xs font-bold text-white">
-                              Code: {m.material_code}
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-zinc-200 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 font-mono">
+                              {m.cpse_code}
                             </span>
                           </div>
-
-                          <div className="flex items-center space-x-3 text-xs text-zinc-300">
-                            <span>UOM: <strong className="text-white font-mono">{m.uom}</strong></span>
-                            <span>Last PO: <strong className="text-emerald-400 font-mono">₹{mItem.last_po_price?.toLocaleString() || "N/A"}</strong></span>
-                            <span>Vendor: <strong className="text-zinc-200">{mItem.vendor_name || "Unknown"}</strong></span>
-                          </div>
+                          <span className="font-mono text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                            {m.material_code}
+                          </span>
                         </div>
 
                         {/* Raw Description */}
-                        <div className="bg-zinc-950 p-3 rounded-xl border border-white/[0.04] mb-2.5">
-                          <span className="text-[10px] uppercase font-semibold text-zinc-500 block mb-0.5">Source Specification:</span>
-                          <span className="font-mono text-xs text-zinc-100 font-medium">{m.short_description}</span>
-                        </div>
+                        <p className="text-xs text-zinc-700 dark:text-zinc-300 font-sans leading-relaxed line-clamp-2" title={m.short_description}>
+                          {m.short_description}
+                        </p>
 
-                        {/* Extracted Parametric Badges */}
-                        <div className="flex flex-wrap gap-1.5 text-[11px]">
-                          {m.item_noun && (
-                            <span className="px-2.5 py-0.5 bg-zinc-800 text-zinc-200 rounded-md border border-white/[0.06]">
-                              {m.item_noun}
+                        {/* Extracted Attribute Pills */}
+                        <div className="space-y-1.5 text-[11px] font-mono">
+                          <div className="flex justify-between py-1 border-b border-zinc-200/40 dark:border-zinc-800/40">
+                            <span className="text-zinc-500">Noun:</span>
+                            <span className="font-medium text-zinc-900 dark:text-zinc-100">{m.item_noun || "—"}</span>
+                          </div>
+                          <div className="flex justify-between py-1 border-b border-zinc-200/40 dark:border-zinc-800/40">
+                            <span className="text-zinc-500">Size:</span>
+                            <span className="font-medium text-zinc-900 dark:text-zinc-100">{m.nominal_size || "—"}</span>
+                          </div>
+                          <div className="flex justify-between py-1 border-b border-zinc-200/40 dark:border-zinc-800/40">
+                            <span className="text-zinc-500">Rating:</span>
+                            <span className="font-medium text-zinc-900 dark:text-zinc-100">{m.pressure_class || "—"}</span>
+                          </div>
+                          <div className="flex justify-between py-1 border-b border-zinc-200/40 dark:border-zinc-800/40">
+                            <span className="text-zinc-500">MOC:</span>
+                            <span className="font-medium text-zinc-900 dark:text-zinc-100">{m.moc || "—"}</span>
+                          </div>
+                          <div className="flex justify-between py-1 border-b border-zinc-200/40 dark:border-zinc-800/40">
+                            <span className="text-zinc-500">End Conn:</span>
+                            <span className="font-medium text-zinc-900 dark:text-zinc-100">{m.end_connection || "—"}</span>
+                          </div>
+                          <div className="flex justify-between py-1">
+                            <span className="text-zinc-500">Last PO:</span>
+                            <span className="font-bold text-zinc-900 dark:text-zinc-100 tabular-nums">
+                              ₹{mItem.last_po_price ? mItem.last_po_price.toLocaleString() : "—"}
                             </span>
-                          )}
-                          {m.nominal_size && (
-                            <span className="px-2.5 py-0.5 bg-zinc-800 text-zinc-200 rounded-md border border-white/[0.06]">
-                              Size: {m.nominal_size}
-                            </span>
-                          )}
-                          {m.pressure_class && (
-                            <span className="px-2.5 py-0.5 bg-zinc-800 text-zinc-200 rounded-md border border-white/[0.06]">
-                              Rating: {m.pressure_class}
-                            </span>
-                          )}
-                          {m.schedule && (
-                            <span className="px-2.5 py-0.5 bg-zinc-800 text-zinc-200 rounded-md border border-white/[0.06]">
-                              Schedule: {m.schedule}
-                            </span>
-                          )}
-                          {m.moc && (
-                            <span className="px-2.5 py-0.5 bg-zinc-800 text-zinc-200 rounded-md border border-white/[0.06]">
-                              MOC: {m.moc}
-                            </span>
-                          )}
-                          {m.end_connection && (
-                            <span className="px-2.5 py-0.5 bg-zinc-800 text-zinc-200 rounded-md border border-white/[0.06]">
-                              End: {m.end_connection}
-                            </span>
-                          )}
-                          {m.clean_part_number && (
-                            <span className="px-2.5 py-0.5 bg-zinc-800 text-zinc-200 rounded-md border border-white/[0.06] font-mono">
-                              Part: {m.clean_part_number}
-                            </span>
-                          )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -435,131 +480,79 @@ export default function ReviewQueuePage() {
                 </div>
               </div>
 
-              {/* Explainable Match Score Breakdown */}
-              <div className="p-4 rounded-2xl bg-zinc-950 border border-white/[0.08] space-y-2.5">
-                <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block">
-                  Explainable Zero-Training Score Breakdown:
-                </span>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                  <div className="p-2.5 bg-zinc-900/60 rounded-xl border border-white/[0.04]">
-                    <span className="text-zinc-400 block text-[10px]">Semantic Embedding (40%)</span>
-                    <span className="font-bold text-white font-mono">
-                      {(clusterCard.scores.semantic_score * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                  <div className="p-2.5 bg-zinc-900/60 rounded-xl border border-white/[0.04]">
-                    <span className="text-zinc-400 block text-[10px]">Parametric Spec (35%)</span>
-                    <span className="font-bold text-white font-mono">
-                      {(clusterCard.scores.attribute_score * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                  <div className="p-2.5 bg-zinc-900/60 rounded-xl border border-white/[0.04]">
-                    <span className="text-zinc-400 block text-[10px]">Procurement Graph (25%)</span>
-                    <span className="font-bold text-white font-mono">
-                      {(clusterCard.scores.procurement_score * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                  <div className="p-2.5 bg-zinc-900/60 rounded-xl border border-white/[0.04]">
-                    <span className="text-zinc-400 block text-[10px]">Safety Guardrail</span>
-                    {clusterCard.scores.safety_veto ? (
-                      <span className="font-bold text-rose-400 flex items-center text-[11px]">
-                        <ShieldAlert className="h-3.5 w-3.5 mr-1 text-rose-400" /> VETOED ({clusterCard.scores.veto_reason})
-                      </span>
-                    ) : (
-                      <span className="font-bold text-emerald-400 flex items-center text-[11px]">
-                        <ShieldCheck className="h-3.5 w-3.5 mr-1 text-emerald-400" /> PASSED
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Proposed ISO 8000 Golden Record Box */}
+              {/* Proposed ISO 8000 Golden Record */}
               <div className="space-y-2">
-                <span className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wider block">
-                  Proposed Golden Record (ISO 8000 Noun-Modifier Format):
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400 font-mono block">
+                  Standardized ISO 8000 Description (Noun-Modifier Format):
                 </span>
                 <textarea
                   value={goldenDesc}
                   onChange={(e) => setGoldenDesc(e.target.value)}
                   rows={2}
-                  className="w-full glass-input rounded-xl p-3.5 text-xs font-mono text-emerald-300 focus:outline-none font-semibold"
+                  className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-3 text-xs font-mono font-medium text-zinc-900 dark:text-zinc-100 focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600"
                 />
               </div>
 
-              {/* Reviewer Notes */}
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-medium text-zinc-400">Reviewer Governance Notes:</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Verified ASME B16.34 specifications & L&T supply history. Approved."
-                  value={reviewerNotes}
-                  onChange={(e) => setReviewerNotes(e.target.value)}
-                  className="w-full glass-input rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none"
-                />
-              </div>
-
-              {/* Action Buttons */}
-              <div className="pt-3 flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.08]">
+              {/* Primary Action Buttons Bar */}
+              <div className="pt-4 border-t border-zinc-200 dark:border-zinc-800 flex flex-col sm:flex-row items-center justify-between gap-3">
                 <div className="flex items-center space-x-2">
-                  <button
-                    onClick={() => handleAction("REJECT")}
-                    disabled={actionLoading}
-                    className="flex items-center space-x-1.5 px-3.5 py-2 bg-rose-950/30 hover:bg-rose-900/50 text-rose-300 border border-rose-800/40 rounded-xl text-xs font-medium apple-press transition disabled:opacity-50"
-                  >
-                    <XCircle className="h-3.5 w-3.5 text-rose-400" />
-                    <span>Reject Match</span>
-                  </button>
                   <button
                     onClick={() => handleAction("SPLIT")}
                     disabled={actionLoading}
-                    className="flex items-center space-x-1.5 px-3.5 py-2 glass-input hover:bg-zinc-800 text-zinc-300 rounded-xl text-xs font-medium apple-press transition disabled:opacity-50"
+                    className="h-9 px-3.5 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-medium apple-press transition flex items-center space-x-1.5"
                   >
                     <Split className="h-3.5 w-3.5" />
                     <span>Split Cluster</span>
                   </button>
+
                   <button
                     onClick={() => setDisputeModalOpen(true)}
                     disabled={actionLoading}
-                    className="flex items-center space-x-1.5 px-3.5 py-2 bg-amber-950/30 hover:bg-amber-900/50 text-amber-300 border border-amber-800/40 rounded-xl text-xs font-medium apple-press transition disabled:opacity-50"
+                    className="h-9 px-3.5 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-medium apple-press transition flex items-center space-x-1.5"
                   >
-                    <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
-                    <span>File Dispute</span>
+                    <ShieldAlert className="h-3.5 w-3.5 text-zinc-500" />
+                    <span>Flag Dispute</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedOptions(!showAdvancedOptions)}
+                    className="text-xs text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300 px-2 py-1"
+                  >
+                    {showAdvancedOptions ? "Simple" : "More Options..."}
                   </button>
                 </div>
 
-                <div className="flex items-center space-x-2.5">
-                  <div className="flex items-center space-x-1.5">
-                    <label className="text-[10px] text-zinc-400 uppercase font-semibold">Relation:</label>
+                <div className="flex items-center space-x-2">
+                  {showAdvancedOptions && (
                     <select
                       value={selectedRelationship}
                       onChange={(e) => setSelectedRelationship(e.target.value)}
-                      className="glass-input text-zinc-200 rounded-xl px-2.5 py-1.5 text-xs font-medium focus:outline-none"
+                      className="h-9 bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200 rounded-xl px-2.5 text-xs font-medium focus:outline-none"
                     >
-                      <option value="IDENTICAL">Identical Match (100% Equiv)</option>
+                      <option value="IDENTICAL">Identical (100% Equivalent)</option>
                       <option value="FUNCTIONAL_EQUIVALENT">Functional Equivalent</option>
                       <option value="BRAND_ALTERNATIVE">Brand Alternative</option>
-                      <option value="KIT_COMPONENT">Kit vs Component</option>
+                      <option value="KIT_COMPONENT">Kit Component</option>
                       <option value="PACKAGING_VARIANT">Packaging Variant</option>
                       <option value="SUPERSEDED">Superseded / Upgraded</option>
-                      <option value="SUBSTITUTE">Substitute Material</option>
                     </select>
-                  </div>
+                  )}
 
                   <button
                     onClick={() => handleAction(selectedRelationship)}
                     disabled={actionLoading || selectedMaterialIds.length === 0}
-                    className="flex items-center space-x-2 px-5 py-2 bg-white hover:bg-zinc-200 text-black rounded-xl text-xs font-bold shadow-sm apple-press transition disabled:opacity-50"
+                    className="h-9 px-5 bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-950 rounded-xl text-xs font-semibold apple-press transition shadow-sm flex items-center space-x-2 disabled:opacity-40"
                   >
-                    <CheckCircle2 className="h-4 w-4 text-black" />
+                    <CheckCircle2 className="h-4 w-4" />
                     <span>Approve & Mint CNMC</span>
                   </button>
                 </div>
               </div>
             </div>
           ) : (
-            <div className="glass-card rounded-2xl p-16 text-center text-zinc-500 text-xs">
-              Select a cluster from the left queue to inspect and take action.
+            <div className="glass-card rounded-2xl p-20 text-center text-zinc-400 text-xs font-sans">
+              Select a cluster from the left queue to compare and validate.
             </div>
           )}
         </div>
@@ -567,51 +560,51 @@ export default function ReviewQueuePage() {
 
       {/* In-App Multi-CPSE Dispute Arbitration Modal */}
       {disputeModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="glass-card max-w-lg w-full rounded-2xl p-6 space-y-4 border border-white/[0.1] bg-zinc-950/95">
-            <div className="flex items-center space-x-2.5 border-b border-white/[0.08] pb-3">
-              <ShieldAlert className="h-5 w-5 text-amber-400" />
+        <div className="fixed inset-0 z-50 bg-black/60 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="glass-card max-w-lg w-full rounded-2xl p-6 space-y-4 border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 shadow-2xl">
+            <div className="flex items-center space-x-2.5 border-b border-zinc-200 dark:border-zinc-800 pb-3">
+              <ShieldAlert className="h-4 w-4 text-amber-500" />
               <div>
-                <h3 className="text-sm font-bold text-white">File Formal CPSE Arbitration Dispute</h3>
-                <p className="text-[11px] text-zinc-400">Escalates this match candidate cluster to the National Data Steward.</p>
+                <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">File Formal CPSE Arbitration Dispute</h3>
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">Escalates this match candidate to the National Data Steward.</p>
               </div>
             </div>
 
             <div className="space-y-3 text-xs">
               <div>
-                <label className="text-zinc-300 font-semibold block mb-1">Dissenting CPSE Entity</label>
+                <label className="text-zinc-700 dark:text-zinc-300 font-medium block mb-1">Dissenting CPSE Entity</label>
                 <select
                   value={disputeCpse}
                   onChange={(e) => setDisputeCpse(e.target.value)}
-                  className="w-full glass-input text-white rounded-xl px-3 py-2 focus:outline-none"
+                  className="w-full h-8.5 bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-900 dark:text-zinc-200 rounded-xl px-2.5 focus:outline-none"
                 >
-                  <option value="IOCL">IOCL (Indian Oil Corporation)</option>
+                  <option value="IOCL">IOCL (Indian Oil)</option>
                   <option value="CPCL">CPCL (Chennai Petroleum)</option>
                   <option value="BPCL">BPCL (Bharat Petroleum)</option>
-                  <option value="NTPC">NTPC Limited</option>
-                  <option value="SAIL">SAIL</option>
                   <option value="ONGC">ONGC</option>
-                  <option value="COALINDIA">Coal India</option>
+                  <option value="NTPC">NTPC</option>
+                  <option value="SAIL">SAIL</option>
                   <option value="BHEL">BHEL</option>
+                  <option value="COALINDIA">Coal India</option>
                 </select>
               </div>
 
               <div>
-                <label className="text-zinc-300 font-semibold block mb-1">Technical Ground for Dispute</label>
+                <label className="text-zinc-700 dark:text-zinc-300 font-medium block mb-1">Technical Ground for Dispute</label>
                 <textarea
                   rows={3}
-                  placeholder="Explain why materials are not interchangeable (e.g., MOC differential, trim variation, design pressure mismatch)..."
+                  placeholder="Explain why materials are not interchangeable (e.g. pressure rating mismatch, metallurgy difference)..."
                   value={disputeReason}
                   onChange={(e) => setDisputeReason(e.target.value)}
-                  className="w-full glass-input text-white rounded-xl p-3 focus:outline-none"
+                  className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-900 dark:text-zinc-200 rounded-xl p-3 focus:outline-none font-sans"
                 />
               </div>
             </div>
 
-            <div className="flex items-center justify-end space-x-2.5 pt-2">
+            <div className="flex items-center justify-end space-x-2 pt-2">
               <button
                 onClick={() => setDisputeModalOpen(false)}
-                className="px-4 py-2 glass-input hover:bg-zinc-800 text-zinc-300 rounded-xl text-xs font-semibold transition"
+                className="h-8.5 px-3 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-300 rounded-xl text-xs font-medium apple-press transition"
               >
                 Cancel
               </button>
@@ -632,7 +625,7 @@ export default function ReviewQueuePage() {
                   }
                 }}
                 disabled={!disputeReason.trim() || actionLoading}
-                className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-black rounded-xl text-xs font-bold transition disabled:opacity-50"
+                className="h-8.5 px-4 bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-950 rounded-xl text-xs font-semibold apple-press transition disabled:opacity-50"
               >
                 Submit Dispute
               </button>

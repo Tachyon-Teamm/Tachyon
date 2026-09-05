@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import io
 import re
 import uuid
@@ -15,7 +16,6 @@ from app.schemas.schemas import ColumnMappingDetectResponse, IngestionBatchRespo
 from app.services.normalization.uom_normalizer import UOMNormalizer
 from app.services.normalization.spec_extractor import SpecExtractor
 from app.tasks.ingestion_tasks import process_ingestion_batch_task
-from app.core.config import settings
 from app.services.normalization.data_profiler import DataProfiler
 
 router = APIRouter(prefix="/ingestion", tags=["Ingestion & Normalization"])
@@ -60,6 +60,9 @@ STANDARD_HEADER_SYNONYMS = {
     "hsn_code": [
         "HSN_CODE", "HSN", "SAC", "TARIFF_CODE", "COMMODITY_CODE", "HSN_SAC", 
         "SAC_CODE", "TAX_CODE", "SAC_NO", "HSN_NO"
+    ],
+    "quantity": [
+        "QUANTITY", "QTY", "PO_QTY", "ANNUAL_DEMAND", "MENGE", "ORDER_QTY", "REQ_QTY", "DEMAND"
     ],
     "part_number": [
         "PART_NUMBER", "PART_NO", "CATALOG_NO", "OEM_PART_NO", "MODEL_NO", "CAT_NO"
@@ -439,77 +442,33 @@ async def list_batches(db: Session = Depends(get_db)):
 @router.get("/samples")
 async def list_sample_datasets():
     """
-    Returns available multi-sector ERP sample datasets across Oil & Gas, Power, and Steel.
+    Returns available multi-sector ERP sample datasets across Oil & Gas, Power, Steel, Mining, Heavy Eng.
     """
-    samples = {
-        "CPCL": {
-            "sector": "OIL_AND_GAS",
-            "name": "Chennai Petroleum Corporation Limited",
-            "filename": "cpcl_sample_extract.csv",
-            "content": (
-                "MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE\n"
-                "100234,VLV GATE 6IN 300# CS FLG,Nos,12500.0,L&T Valves Ltd,84818030\n"
-                "100888,PIPE CS SMLS 4\" SCH 40 ASTM A106,MTR,2450.0,Jindal Saw Ltd,73041910\n"
-                "100999,VALVE 2\" 150# CS FLG,EA,4200.0,L&T Valves,84818030\n"
-                "100501,BEARING 6205-2RS1 SKF,EA,850.0,SKF India Ltd,84821010\n"
-                "100777,MECH SEAL CARTRIDGE PUMP P-101A (SET),SET,45000.0,Flowserve India,84841000\n"
-                "100612,GREASE MOBILITH SHC 100 - 18KG BUCKET,BKT,11700.0,ExxonMobil,27101980\n"
-                "100333,GASKET SPIRAL WOUND 4\" 300# CS/SS,Nos,480.0,Champion Seals Ltd,84841000\n"
-                "100444,FLANGE 6\" 300# WNRF ANSI B16.5 CS,Nos,3200.0,EIL Approved Vendor,73072100"
-            )
-        },
-        "IOCL": {
-            "sector": "OIL_AND_GAS",
-            "name": "Indian Oil Corporation Limited",
-            "filename": "iocl_sample_extract.csv",
-            "content": (
-                "MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE\n"
-                "889102,VALVE, GATE, 150MM, CL300, WCB,EA,10800.0,Larsen & Toubro Ltd - Valve Div,84818030\n"
-                "889555,PIPE CS 4\" SCH 80 A106,M,3800.0,Maharashtra Seamless,73041910\n"
-                "889999,VALVE 2\" 300# CS FLG,EA,6800.0,L&T Valves,84818030\n"
-                "889501,SKF BEARING NO. 6205 2RS1 / C3,EA,920.0,SKF Bearings,84821010\n"
-                "889777,ROTARY SEAL RING FOR PUMP P-101A,EA,8500.0,Flowserve,84841000\n"
-                "889612,GREASE MOBILITH SHC 100,KG,630.0,Mobil Oil,27101980\n"
-                "889333,4\" SPIRAL GASKET JAALI WALA 300#,EA,450.0,Champion Seals,84841000\n"
-                "889444,FLANGE 6\" 300# WNRF ASME B16.5 A105,EA,3100.0,Engineers India Ltd Vendor,73072100"
-            )
-        },
-        "BPCL": {
-            "sector": "OIL_AND_GAS",
-            "name": "Bharat Petroleum Corporation Limited",
-            "filename": "bpcl_sample_extract.csv",
-            "content": (
-                "MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE\n"
-                "445511,6 INCH GATE VALVE FLANGED 300#,Numbers,11200.0,Microfinish Valves,84818030\n"
-                "445888,4 INCH SEAMLESS PIPE SCH40 A106,MTR,2520.0,Jindal Saw,73041910\n"
-                "445501,BRG SKF 6205-2RS1,PCS,870.0,SKF,84821010\n"
-                "445612,MOBILITH SHC 100 - 180KG DRUM,DRM,108000.0,ExxonMobil,27101980\n"
-                "445333,GASKET SPIRAL 4 INCH 300#,EA,460.0,Champion,84841000"
-            )
-        },
-        "NTPC": {
-            "sector": "POWER",
-            "name": "NTPC Limited (Power)",
-            "filename": "ntpc_sample_extract.csv",
-            "content": (
-                "MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE\n"
-                "770101,TRANSFORMER 33KV / 11KV 10MVA ONAN,EA,4200000.0,BHEL,85042300\n"
-                "770202,HT XLPE CABLE 3 CORE 11KV 300 SQMM,MTR,1850.0,Polycab India,85446090\n"
-                "770303,VACUUM CIRCUIT BREAKER 11KV 1250A 25KA,EA,310000.0,ABB India,85352190"
-            )
-        },
-        "SAIL": {
-            "sector": "STEEL",
-            "name": "Steel Authority of India Limited",
-            "filename": "sail_sample_extract.csv",
-            "content": (
-                "MATERIAL_NO,ITEM_SPEC,UNIT_OF_MEASURE,LAST_PO_PRICE,VENDOR_NAME,HSN_CODE\n"
-                "990101,TMT REBAR FE 500D 16MM DIA IS 1786,MT,54000.0,SAIL Plants,72142090\n"
-                "990202,HIGH ALUMINA REFRACTORY BRICK 70% AL2O3,MT,32000.0,TRL Krosaki,69022020\n"
-                "990303,CONVEYOR BELTING 1200MM WIDTH 1000/4 GRADE M,MTR,4500.0,Fenner India,40101200"
-            )
-        }
+    root_data = Path(__file__).resolve().parents[4] / "data" / "synthetic_datasets"
+    cwd_data = Path(os.getcwd()) / "data" / "synthetic_datasets"
+    sample_dir = str(root_data if root_data.exists() else cwd_data)
+    cpse_meta = {
+        "CPCL": {"sector": "OIL_AND_GAS", "name": "Chennai Petroleum Corporation Limited", "file": "cpcl_materials.csv"},
+        "IOCL": {"sector": "OIL_AND_GAS", "name": "Indian Oil Corporation Limited", "file": "iocl_materials.csv"},
+        "BPCL": {"sector": "OIL_AND_GAS", "name": "Bharat Petroleum Corporation Limited", "file": "bpcl_materials.csv"},
+        "ONGC": {"sector": "OIL_AND_GAS", "name": "Oil and Natural Gas Corporation", "file": "ongc_materials.csv"},
+        "NTPC": {"sector": "POWER", "name": "NTPC Limited (Power)", "file": "ntpc_materials.csv"},
+        "SAIL": {"sector": "STEEL", "name": "Steel Authority of India Limited", "file": "sail_materials.csv"},
+        "BHEL": {"sector": "HEAVY_ENG", "name": "Bharat Heavy Electricals Limited", "file": "bhel_materials.csv"},
+        "COALINDIA": {"sector": "MINING", "name": "Coal India Limited", "file": "coalindia_materials.csv"},
     }
+    samples = {}
+    for code, meta in cpse_meta.items():
+        fpath = os.path.join(sample_dir, meta["file"])
+        if os.path.exists(fpath):
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+            samples[code] = {
+                "sector": meta["sector"],
+                "name": meta["name"],
+                "filename": meta["file"],
+                "content": content
+            }
     return samples
 
 @router.post("/preview")
